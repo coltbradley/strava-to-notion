@@ -54,12 +54,25 @@ def http_request_with_retries(
         try:
             response = requests.request(method, url, timeout=timeout, **kwargs)
             status = response.status_code
+
+            # Retryable statuses
             if status in retry_statuses:
-                # Treat as retryable error
                 raise requests.exceptions.HTTPError(
                     f"Retryable HTTP error {status} for {method} {url}",
                     response=response,
                 )
+
+            # Non-retryable HTTP errors should fail fast
+            if status >= 400:
+                # Include a small snippet of the response for debugging
+                snippet = (response.text or "").strip()
+                if len(snippet) > 500:
+                    snippet = snippet[:500] + "..."
+                raise requests.exceptions.HTTPError(
+                    f"Non-retryable HTTP error {status} for {method} {url}: {snippet}",
+                    response=response,
+                )
+
             return response
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
                 requests.exceptions.HTTPError) as e:
@@ -67,6 +80,10 @@ def http_request_with_retries(
             attempts += 1
             response = getattr(e, "response", None)
             status = response.status_code if response is not None else None
+
+            # If this was a non-retryable HTTPError (e.g., 400/401/403), don't retry
+            if isinstance(e, requests.exceptions.HTTPError) and status is not None and status not in retry_statuses:
+                raise
 
             if attempts > max_retries:
                 logger.error(
@@ -117,7 +134,19 @@ class StravaClient:
         try:
             response = http_request_with_retries("POST", url, data=payload)
             data = response.json()
-            self.access_token = data["access_token"]
+
+            access_token = data.get("access_token")
+            if not access_token:
+                # Strava commonly returns {"message":..., "errors":...} or {"error":..., "message":...}
+                logger.error(
+                    "Strava token refresh response did not include access_token. "
+                    "Status=%s Response=%s",
+                    getattr(response, "status_code", None),
+                    data,
+                )
+                raise ValueError("Strava token refresh failed: missing access_token")
+
+            self.access_token = access_token
             logger.info("Successfully refreshed Strava access token")
             return self.access_token
         except requests.exceptions.RequestException as e:
@@ -409,6 +438,8 @@ class NotionClient:
     
     def __init__(self, api_key: str, database_id: str):
         self.client = Client(auth=api_key)
+        # Keep a copy of the raw API key for low-level HTTP fallbacks
+        self.api_key = api_key
         self.database_id = database_id
         self.allowed_properties: Optional[set[str]] = None
 
@@ -498,7 +529,7 @@ class NotionClient:
         database_id = query_params.pop("database_id")
         url = f"https://api.notion.com/v1/databases/{database_id}/query"
         headers = {
-            "Authorization": f"Bearer {self.client.auth}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28",
         }
@@ -845,6 +876,12 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
     }
     
     for activity in activities:
+        # Very defensive: make sure each item is a dict from Strava, not an error string
+        if not isinstance(activity, dict):
+            logger.error("Unexpected activity payload (not a dict): %r", activity)
+            stats["failed"] += 1
+            continue
+
         activity_id = str(activity.get("id"))
         has_hr = bool(activity.get("has_heartrate"))
         sport_type = activity.get("type", "")
