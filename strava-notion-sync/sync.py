@@ -383,11 +383,23 @@ class NotionClient:
                 database_id=self.database_id,
             )
             props = db.get("properties", {}) if isinstance(db, dict) else {}
-            self.allowed_properties = set(props.keys())
-            logger.info(
-                "Loaded Notion database schema; %d properties available",
-                len(self.allowed_properties),
-            )
+            keys = set(props.keys())
+            # If we somehow see zero properties, treat this as a soft failure so we
+            # don't silently drop all writes. Better to let Notion validate.
+            if not keys:
+                logger.warning(
+                    "Loaded Notion database schema but found 0 properties. "
+                    "Schema-based filtering will be disabled; writes will include "
+                    "all generated properties and rely on Notion for validation."
+                )
+                self.allowed_properties = None
+            else:
+                self.allowed_properties = keys
+                logger.info(
+                    "Loaded Notion database schema; %d properties available: %s",
+                    len(self.allowed_properties),
+                    sorted(self.allowed_properties),
+                )
         except Exception as e:
             logger.warning(
                 "Could not load Notion database schema; will attempt writes without "
