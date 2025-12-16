@@ -10,7 +10,7 @@ Once set up, it runs unattended.
 
 ## What this does
 
-- Pulls your recent activities from Strava (default: last 30 days)
+- Pulls your recent activities from Strava (default: last 90 days)
 - Creates **one row per activity** in a Notion database called **Workouts**
 - Uses the Strava **Activity ID** to avoid duplicates
 - Updates existing rows if an activity changes

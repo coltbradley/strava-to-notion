@@ -815,7 +815,7 @@ class NotionClient:
         return properties
 
 
-def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
+def sync_strava_to_notion(days: int = 90, failure_threshold: float = 0.2):
     """
     Main sync function.
     
