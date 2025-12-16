@@ -182,7 +182,7 @@ class StravaClient:
                 )
             raise
     
-    def get_recent_activities(self, days: int = 30) -> List[Dict]:
+    def get_recent_activities(self, days: int = 180) -> List[Dict]:
         """Fetch recent activities from Strava for the specified number of days."""
         url = f"{self.base_url}/athlete/activities"
         headers = {"Authorization": f"Bearer {self.access_token}"}
@@ -560,7 +560,7 @@ class NotionClient:
         )
         return response.json()
     
-    def get_existing_activity_pages(self, days: int = 30) -> Dict[str, str]:
+    def get_existing_activity_pages(self, days: int = 180) -> Dict[str, str]:
         """
         Get existing activity pages from Notion within date range.
         Returns dict mapping activity_id (str) to page_id (str).
@@ -624,7 +624,7 @@ class NotionClient:
                 return response["results"][0]["id"]
             return None
         except Exception as e:
-            logger.warning(f"Error searching for activity {activity_id} in Notion: {e}")
+            logger.warning(f"Error searching for activity {activity_id}: {e}")
             return None
     
     def upsert_activity(self, activity: Dict, existing_page_id: Optional[str] = None) -> bool:
@@ -815,7 +815,7 @@ class NotionClient:
         return properties
 
 
-def sync_strava_to_notion(days: int = 90, failure_threshold: float = 0.2):
+def sync_strava_to_notion(days: int = 180, failure_threshold: float = 0.2):
     """
     Main sync function.
     
