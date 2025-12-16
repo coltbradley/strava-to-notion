@@ -9,10 +9,13 @@ import os
 import sys
 import time
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Set
+import random
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional, Callable, Any
+
 import requests
 from notion_client import Client
+from notion_client.errors import APIResponseError
 
 
 # Configure logging
@@ -21,6 +24,70 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def http_request_with_retries(
+    method: str,
+    url: str,
+    *,
+    max_retries: int = 3,
+    backoff_factor: float = 1.0,
+    timeout: int = 30,
+    **kwargs: Any,
+) -> requests.Response:
+    """
+    Make an HTTP request with basic retry + exponential backoff.
+
+    Retries on:
+      - 429
+      - 5xx
+      - timeouts / connection errors
+    """
+    retry_statuses = {429, 500, 502, 503, 504}
+    attempts = 0
+    last_exc: Optional[requests.exceptions.RequestException] = None
+
+    while attempts <= max_retries:
+        try:
+            response = requests.request(method, url, timeout=timeout, **kwargs)
+            status = response.status_code
+            if status in retry_statuses:
+                # Treat as retryable error
+                raise requests.exceptions.HTTPError(
+                    f"Retryable HTTP error {status} for {method} {url}",
+                    response=response,
+                )
+            return response
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                requests.exceptions.HTTPError) as e:
+            last_exc = e
+            attempts += 1
+            response = getattr(e, "response", None)
+            status = response.status_code if response is not None else None
+
+            if attempts > max_retries:
+                logger.error(
+                    f"HTTP request failed after {attempts} attempts "
+                    f"for {method} {url} (status={status})"
+                )
+                raise
+
+            # Backoff with jitter
+            sleep_seconds = backoff_factor * (2 ** (attempts - 1))
+            sleep_seconds += random.uniform(0, 0.25)
+            logger.warning(
+                f"Retrying {method} {url} after error (attempt {attempts}/{max_retries}, "
+                f"status={status}): {e}"
+            )
+            time.sleep(sleep_seconds)
+        except requests.exceptions.RequestException as e:
+            # Non-retryable request exception
+            raise
+
+    # Should not reach here
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"Unknown error making request to {url}")
 
 
 class StravaClient:
@@ -41,29 +108,36 @@ class StravaClient:
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "refresh_token": self.refresh_token,
-            "grant_type": "refresh_token"
+            "grant_type": "refresh_token",
         }
-        
+
         try:
-            response = requests.post(url, data=payload)
-            response.raise_for_status()
+            response = http_request_with_retries("POST", url, data=payload)
             data = response.json()
             self.access_token = data["access_token"]
             logger.info("Successfully refreshed Strava access token")
             return self.access_token
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to refresh Strava access token: {e}")
-            if response.status_code == 401:
-                logger.error("Invalid refresh token. Please regenerate your Strava tokens.")
+            resp = getattr(e, "response", None)
+            status = resp.status_code if resp is not None else None
+            logger.error(
+                f"Failed to refresh Strava access token "
+                f"(status={status}): {e}"
+            )
+            if status == 401:
+                logger.error(
+                    "Received 401 from Strava token endpoint. "
+                    "Your refresh token may be invalid or revoked."
+                )
             raise
     
     def get_recent_activities(self, days: int = 30) -> List[Dict]:
         """Fetch recent activities from Strava for the specified number of days."""
         url = f"{self.base_url}/athlete/activities"
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        
-        # Calculate after timestamp (Unix epoch)
-        after = int((datetime.now() - timedelta(days=days)).timestamp())
+
+        # Calculate 'after' timestamp in UTC (Unix epoch)
+        after = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
         params = {"after": after, "per_page": 200}
         
         all_activities = []
@@ -72,23 +146,48 @@ class StravaClient:
         while True:
             params["page"] = page
             try:
-                response = requests.get(url, headers=headers, params=params)
-                response.raise_for_status()
+                response = http_request_with_retries(
+                    "GET", url, headers=headers, params=params
+                )
                 activities = response.json()
-                
+
                 if not activities:
                     break
-                
+
                 all_activities.extend(activities)
                 logger.info(f"Fetched page {page}: {len(activities)} activities")
-                
+
                 # If we got fewer than per_page, we've reached the end
                 if len(activities) < params["per_page"]:
                     break
-                
+
                 page += 1
-                
+
             except requests.exceptions.RequestException as e:
+                resp = getattr(e, "response", None)
+                status = resp.status_code if resp is not None else None
+                # Optional: refresh token once on mid-run 401 and retry this page
+                if status == 401:
+                    logger.warning(
+                        "Received 401 while fetching activities; "
+                        "refreshing access token and retrying page once."
+                    )
+                    self._refresh_access_token()
+                    headers["Authorization"] = f"Bearer {self.access_token}"
+                    # One retry only; if it fails again, bubble up
+                    response = http_request_with_retries(
+                        "GET", url, headers=headers, params=params
+                    )
+                    activities = response.json()
+                    if not activities:
+                        break
+                    all_activities.extend(activities)
+                    logger.info(f"Fetched page {page}: {len(activities)} activities")
+                    if len(activities) < params["per_page"]:
+                        break
+                    page += 1
+                    continue
+
                 logger.error(f"Error fetching Strava activities: {e}")
                 raise
         
@@ -100,44 +199,65 @@ class StravaClient:
         url = f"{self.base_url}/athlete/zones"
         headers = {"Authorization": f"Bearer {self.access_token}"}
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
+            response = http_request_with_retries("GET", url, headers=headers)
             data = response.json()
             return data.get("heart_rate", {}).get("zones")
         except requests.exceptions.RequestException as e:
             logger.warning(f"Could not fetch Strava HR zones; HR zone metrics will be skipped: {e}")
             return None
 
-    def get_activity_hr_stream(self, activity_id: int) -> Optional[List[int]]:
-        """Fetch heart rate stream for an activity (per-second samples)."""
+    def get_activity_hr_stream(self, activity_id: int) -> Optional[Dict[str, List[int]]]:
+        """Fetch heart rate + time streams for an activity."""
         url = f"{self.base_url}/activities/{activity_id}/streams"
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        params = {"keys": "heartrate", "key_by_type": "true"}
+        params = {"keys": "heartrate,time", "key_by_type": "true"}
         try:
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            response = http_request_with_retries("GET", url, headers=headers, params=params)
             data = response.json()
             hr_stream = data.get("heartrate", {}).get("data")
-            if not hr_stream:
+            time_stream = data.get("time", {}).get("data")
+            if not hr_stream or not time_stream:
                 return None
-            return hr_stream
+            return {"hr": hr_stream, "time": time_stream}
         except requests.exceptions.RequestException as e:
             logger.warning(f"Could not fetch HR stream for activity {activity_id}: {e}")
             return None
 
     @staticmethod
-    def compute_hr_zone_minutes(hr_stream: List[int], zones: List[Dict]) -> Optional[Dict[int, float]]:
-        """Compute minutes per HR zone given a stream and zone definitions."""
+    def compute_hr_zone_minutes(
+        hr_stream: Dict[str, List[int]], zones: List[Dict]
+    ) -> Optional[Dict[int, float]]:
+        """
+        Compute minutes per HR zone given HR + time streams and zone definitions.
+
+        Uses time deltas between samples instead of assuming 1Hz sampling.
+        """
         if not hr_stream or not zones:
             return None
+        hr_values = hr_stream.get("hr") or []
+        t_values = hr_stream.get("time") or []
+        if not hr_values or not t_values:
+            return None
+
+        # Ensure equal length
+        n = min(len(hr_values), len(t_values))
+        if n < 2:
+            return None
+        hr_values = hr_values[:n]
+        t_values = t_values[:n]
+
         zone_counts = {idx + 1: 0 for idx in range(len(zones))}
-        for hr in hr_stream:
+        # Accumulate seconds per zone
+        for i in range(n - 1):
+            hr = hr_values[i]
+            dt = max(0, t_values[i + 1] - t_values[i])
             for idx, zone in enumerate(zones):
                 min_hr = zone.get("min", 0)
                 max_hr = zone.get("max")  # may be None for last zone
                 if hr >= min_hr and (max_hr is None or hr < max_hr):
-                    zone_counts[idx + 1] += 1
+                    zone_counts[idx + 1] += dt
                     break
+
         # Convert seconds to minutes, rounded to 2 decimals
         return {zone: round(seconds / 60, 2) for zone, seconds in zone_counts.items()}
 
@@ -148,6 +268,63 @@ class NotionClient:
     def __init__(self, api_key: str, database_id: str):
         self.client = Client(auth=api_key)
         self.database_id = database_id
+        self.allowed_properties: Optional[set[str]] = None
+
+    def _ensure_schema_loaded(self) -> None:
+        """Retrieve and cache the Notion database schema."""
+        if self.allowed_properties is not None:
+            return
+        try:
+            db = self._notion_call_with_retries(
+                self.client.databases.retrieve,
+                database_id=self.database_id,
+            )
+            props = db.get("properties", {}) if isinstance(db, dict) else {}
+            self.allowed_properties = set(props.keys())
+            logger.info(
+                "Loaded Notion database schema; %d properties available",
+                len(self.allowed_properties),
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not load Notion database schema; will attempt writes without "
+                "schema filtering. Errors may occur for unknown properties: %s",
+                e,
+            )
+            self.allowed_properties = None
+
+    @staticmethod
+    def _notion_call_with_retries(
+        func: Callable[..., Any],
+        *args: Any,
+        max_retries: int = 3,
+        backoff_factor: float = 1.0,
+        **kwargs: Any,
+    ) -> Any:
+        """Call a Notion SDK function with basic retry/backoff on rate limits and 5xx."""
+        attempts = 0
+        while attempts <= max_retries:
+            try:
+                return func(*args, **kwargs)
+            except APIResponseError as e:
+                status = getattr(e, "status", None)
+                if status in (429, 500, 502, 503, 504) and attempts < max_retries:
+                    attempts += 1
+                    sleep_seconds = backoff_factor * (2 ** (attempts - 1))
+                    sleep_seconds += random.uniform(0, 0.25)
+                    logger.warning(
+                        "Notion API error (status=%s); retrying attempt %d/%d after %.2fs",
+                        status,
+                        attempts,
+                        max_retries,
+                        sleep_seconds,
+                    )
+                    time.sleep(sleep_seconds)
+                    continue
+                raise
+            except Exception:
+                # For non-API errors, don't blindly retry
+                raise
     
     def get_existing_activity_pages(self, days: int = 30) -> Dict[str, str]:
         """
@@ -157,8 +334,8 @@ class NotionClient:
         existing_map = {}
         start_cursor = None
         
-        # Calculate date filter
-        after_date = (datetime.now() - timedelta(days=days)).isoformat()
+        # Calculate date filter (UTC, date-only for stability)
+        after_date = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
         
         while True:
             query_params = {
@@ -175,7 +352,9 @@ class NotionClient:
                 query_params["start_cursor"] = start_cursor
             
             try:
-                response = self.client.databases.query(**query_params)
+                response = self._notion_call_with_retries(
+                    self.client.databases.query, **query_params
+                )
                 
                 for page in response.get("results", []):
                     props = page.get("properties", {})
@@ -201,14 +380,13 @@ class NotionClient:
     def find_page_by_activity_id(self, activity_id: str) -> Optional[str]:
         """Find a Notion page by Activity ID. Returns page_id if found, None otherwise."""
         try:
-            response = self.client.databases.query(
+            response = self._notion_call_with_retries(
+                self.client.databases.query,
                 database_id=self.database_id,
                 filter={
                     "property": "Activity ID",
-                    "rich_text": {
-                        "equals": activity_id
-                    }
-                }
+                    "rich_text": {"equals": activity_id},
+                },
             )
             
             if response.get("results"):
@@ -225,23 +403,42 @@ class NotionClient:
         Returns True if successful, False otherwise.
         """
         properties = self._convert_activity_to_properties(activity)
-        
-        # Remove None values and properties that don't exist
-        properties = {k: v for k, v in properties.items() if v is not None}
+
+        # Ensure schema is loaded so we only write properties that exist
+        self._ensure_schema_loaded()
+
+        # Optionally set Sync Status if DB supports it
+        if self.allowed_properties and "Sync Status" in self.allowed_properties:
+            sync_status_value = "updated" if existing_page_id else "created"
+            properties["Sync Status"] = {
+                "select": {"name": sync_status_value}
+            }
+
+        # Remove None values and properties that don't exist in this database
+        if self.allowed_properties is not None:
+            properties = {
+                k: v
+                for k, v in properties.items()
+                if v is not None and k in self.allowed_properties
+            }
+        else:
+            properties = {k: v for k, v in properties.items() if v is not None}
         
         try:
             if existing_page_id:
                 # Update existing page
-                self.client.pages.update(
+                self._notion_call_with_retries(
+                    self.client.pages.update,
                     page_id=existing_page_id,
-                    properties=properties
+                    properties=properties,
                 )
                 return True
             else:
                 # Create new page
-                self.client.pages.create(
+                self._notion_call_with_retries(
+                    self.client.pages.create,
                     parent={"database_id": self.database_id},
-                    properties=properties
+                    properties=properties,
                 )
                 return True
         except Exception as e:
