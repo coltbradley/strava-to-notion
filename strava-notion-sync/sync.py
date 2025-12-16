@@ -10,6 +10,7 @@ import sys
 import time
 import logging
 import random
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Callable, Any
 
@@ -27,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 # Sports where pace / drift analysis makes sense
 PACE_SPORTS = {"Run", "TrailRun", "Walk", "Hike", "VirtualRun"}
+
+
+def _token_fingerprint(token: str) -> str:
+    """Return a short, non-reversible fingerprint for a token for debugging."""
+    if not token:
+        return "none"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
 
 
 def http_request_with_retries(
@@ -131,6 +139,12 @@ class StravaClient:
             "grant_type": "refresh_token",
         }
 
+        logger.info(
+            "Refreshing Strava access token (client_id=%s, refresh_fingerprint=%s)",
+            self.client_id,
+            _token_fingerprint(self.refresh_token),
+        )
+
         try:
             response = http_request_with_retries("POST", url, data=payload)
             data = response.json()
@@ -147,7 +161,12 @@ class StravaClient:
                 raise ValueError("Strava token refresh failed: missing access_token")
 
             self.access_token = access_token
-            logger.info("Successfully refreshed Strava access token")
+            logger.info(
+                "Successfully refreshed Strava access token "
+                "(access_fingerprint=%s, scope=%s)",
+                _token_fingerprint(self.access_token),
+                data.get("scope"),
+            )
             return self.access_token
         except requests.exceptions.RequestException as e:
             resp = getattr(e, "response", None)

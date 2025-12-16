@@ -195,7 +195,7 @@ After that, the sync runs automatically.
 
 1. Visit (replace `YOUR_CLIENT_ID`):
 
-https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost&approval_prompt=force&scope=activity:read_all
+https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost&approval_prompt=force&scope=read,activity:read_all,profile:read_all
 2. Approve access
 3. Copy the `code` from the redirect URL
 4. Exchange it for tokens:
