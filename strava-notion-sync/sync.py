@@ -25,6 +25,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Sports where pace / drift analysis makes sense
+PACE_SPORTS = {"Run", "TrailRun", "Walk", "Hike", "VirtualRun"}
+
 
 def http_request_with_retries(
     method: str,
@@ -260,6 +263,106 @@ class StravaClient:
 
         # Convert seconds to minutes, rounded to 2 decimals
         return {zone: round(seconds / 60, 2) for zone, seconds in zone_counts.items()}
+
+    @staticmethod
+    def compute_hr_drift(
+        hr_stream: Dict[str, List[int]],
+        moving_time_s: int,
+        distance_m: float,
+    ) -> Optional[Dict[str, float]]:
+        """
+        Compute aerobic decoupling / HR drift metrics using HR + velocity streams.
+
+        Uses time-weighted averages for first vs second half of the activity.
+        Returns dict with:
+          - drift_pct
+          - avg_hr_1, avg_hr_2
+          - avg_vel_1_mps, avg_vel_2_mps
+        or None if metrics cannot be computed safely.
+        """
+        hr_values = hr_stream.get("hr") or []
+        t_values = hr_stream.get("time") or []
+        vel_values = hr_stream.get("vel") or hr_stream.get("velocity") or []
+
+        n = min(len(hr_values), len(t_values), len(vel_values))
+        if n < 2:
+            return None
+
+        hr_values = hr_values[:n]
+        t_values = t_values[:n]
+        vel_values = vel_values[:n]
+
+        total_duration = t_values[-1] - t_values[0]
+        if total_duration <= 0:
+            return None
+
+        midpoint = t_values[0] + total_duration / 2.0
+
+        hr_sum_1 = hr_sum_2 = 0.0
+        vel_sum_1 = vel_sum_2 = 0.0
+        dt_1 = dt_2 = 0.0
+
+        for i in range(n - 1):
+            t0 = t_values[i]
+            t1 = t_values[i + 1]
+            hr = hr_values[i]
+            vel = vel_values[i]
+
+            if t1 <= t0:
+                continue
+
+            # Segment duration
+            dt = t1 - t0
+
+            # Entirely in first half
+            if t1 <= midpoint:
+                hr_sum_1 += hr * dt
+                vel_sum_1 += vel * dt
+                dt_1 += dt
+            # Entirely in second half
+            elif t0 >= midpoint:
+                hr_sum_2 += hr * dt
+                vel_sum_2 += vel * dt
+                dt_2 += dt
+            else:
+                # Crosses midpoint: split segment
+                dt_first = max(0.0, midpoint - t0)
+                dt_second = max(0.0, t1 - midpoint)
+                if dt_first > 0:
+                    hr_sum_1 += hr * dt_first
+                    vel_sum_1 += vel * dt_first
+                    dt_1 += dt_first
+                if dt_second > 0:
+                    hr_sum_2 += hr * dt_second
+                    vel_sum_2 += vel * dt_second
+                    dt_2 += dt_second
+
+        if dt_1 <= 0 or dt_2 <= 0:
+            return None
+
+        avg_hr_1 = hr_sum_1 / dt_1
+        avg_hr_2 = hr_sum_2 / dt_2
+        avg_vel_1 = vel_sum_1 / dt_1
+        avg_vel_2 = vel_sum_2 / dt_2
+
+        # Guard against unrealistic or zero velocities
+        if avg_vel_1 <= 0.1 or avg_vel_2 <= 0.1:
+            return None
+
+        eff_1 = avg_hr_1 / avg_vel_1
+        eff_2 = avg_hr_2 / avg_vel_2
+        if eff_1 <= 0:
+            return None
+
+        drift_pct = ((eff_2 - eff_1) / eff_1) * 100.0
+
+        return {
+            "drift_pct": drift_pct,
+            "avg_hr_1": avg_hr_1,
+            "avg_hr_2": avg_hr_2,
+            "avg_vel_1_mps": avg_vel_1,
+            "avg_vel_2_mps": avg_vel_2,
+        }
 
 
 class NotionClient:
@@ -540,6 +643,42 @@ class NotionClient:
             for zone_num, minutes in hr_zones.items():
                 properties[f"HR Zone {zone_num} (min)"] = {"number": minutes}
 
+        # HR drift / decoupling metrics (if computed)
+        drift = activity.get("_drift_metrics")
+        if drift is not None:
+            drift_pct = drift.get("drift_pct")
+            if drift_pct is not None:
+                properties["HR Drift (%)"] = {"number": round(drift_pct, 2)}
+
+            avg_hr_1 = drift.get("avg_hr_1")
+            avg_hr_2 = drift.get("avg_hr_2")
+            if avg_hr_1 is not None:
+                properties["HR 1st Half (bpm)"] = {"number": round(avg_hr_1, 1)}
+            if avg_hr_2 is not None:
+                properties["HR 2nd Half (bpm)"] = {"number": round(avg_hr_2, 1)}
+
+            # Convert m/s to mph for storage
+            mps_to_mph = 2.236936
+            vel1 = drift.get("avg_vel_1_mps")
+            vel2 = drift.get("avg_vel_2_mps")
+            if vel1 is not None:
+                properties["Speed 1st Half (mph)"] = {
+                    "number": round(vel1 * mps_to_mph, 2)
+                }
+            if vel2 is not None:
+                properties["Speed 2nd Half (mph)"] = {
+                    "number": round(vel2 * mps_to_mph, 2)
+                }
+
+        # Drift eligibility & HR data quality indicators
+        drift_eligible = activity.get("_drift_eligible")
+        if drift_eligible is not None:
+            properties["Drift Eligible"] = {"checkbox": bool(drift_eligible)}
+
+        hr_data_quality = activity.get("_hr_data_quality")
+        if hr_data_quality:
+            properties["HR Data Quality"] = {"select": {"name": hr_data_quality}}
+
         return properties
 
 
@@ -620,14 +759,66 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
     
     for activity in activities:
         activity_id = str(activity.get("id"))
-        has_hr = activity.get("has_heartrate")
-        # Attach HR zone minutes if available and HR data exists
-        if hr_zones and has_hr:
-            hr_stream = strava.get_activity_hr_stream(activity.get("id"))
-            hr_zone_minutes = StravaClient.compute_hr_zone_minutes(hr_stream, hr_zones) if hr_stream else None
-            if hr_zone_minutes:
-                # Attach computed metrics to activity for later conversion
-                activity["_hr_zone_minutes"] = hr_zone_minutes
+        has_hr = bool(activity.get("has_heartrate"))
+        sport_type = activity.get("type", "")
+        moving_time_s = int(activity.get("moving_time") or 0)
+        distance_m = float(activity.get("distance") or 0.0)
+
+        # Default HR-related annotations
+        activity["_hr_zone_minutes"] = None
+        activity["_drift_metrics"] = None
+        activity["_drift_eligible"] = False
+        activity["_hr_data_quality"] = "None"
+
+        # Determine if this activity is eligible for drift analysis
+        min_moving_time_s = 20 * 60  # 20 minutes
+        min_distance_m = 3.0 / 0.000621371  # 3 miles in meters
+        basic_drift_eligible = (
+            has_hr
+            and sport_type in PACE_SPORTS
+            and moving_time_s >= min_moving_time_s
+            and distance_m >= min_distance_m
+        )
+
+        # Fetch HR streams only when we actually need them (zones and/or drift)
+        streams = None
+        if has_hr and (hr_zones or basic_drift_eligible):
+            streams = strava.get_activity_hr_stream(activity.get("id"))
+
+        if streams:
+            hr_values = streams.get("hr") or []
+            t_values = streams.get("time") or []
+            # Basic coverage checks for data quality
+            n_samples = min(len(hr_values), len(t_values))
+            duration_stream = (t_values[-1] - t_values[0]) if n_samples >= 2 else 0
+
+            coverage_ok = (
+                n_samples >= 120
+                or duration_stream >= max(moving_time_s * 0.8, 10 * 60)  # >= 80% or 10 min
+            )
+
+            # HR Data Quality classification
+            if not has_hr or n_samples == 0:
+                activity["_hr_data_quality"] = "None"
+            elif coverage_ok:
+                activity["_hr_data_quality"] = "Good"
+            else:
+                activity["_hr_data_quality"] = "Partial"
+
+            # HR zones (we can compute even with partial coverage)
+            if hr_zones:
+                hr_zone_minutes = StravaClient.compute_hr_zone_minutes(streams, hr_zones)
+                if hr_zone_minutes:
+                    activity["_hr_zone_minutes"] = hr_zone_minutes
+
+            # Drift metrics only if basic criteria + Good data
+            if basic_drift_eligible and coverage_ok:
+                drift_metrics = StravaClient.compute_hr_drift(
+                    streams, moving_time_s, distance_m
+                )
+                if drift_metrics is not None:
+                    activity["_drift_metrics"] = drift_metrics
+                    activity["_drift_eligible"] = True
         
         # Find existing page
         existing_page_id = existing_map.get(activity_id)

@@ -152,6 +152,16 @@ Create a database called **Workouts** with the following properties.
 - `HR Zone 4 (min)`
 - `HR Zone 5 (min)`
 
+### Optional (aerobic decoupling / drift)
+
+- `HR Drift (%)` (Number)
+- `HR 1st Half (bpm)` (Number)
+- `HR 2nd Half (bpm)` (Number)
+- `Speed 1st Half (mph)` (Number)
+- `Speed 2nd Half (mph)` (Number)
+- `Drift Eligible` (Checkbox)
+- `HR Data Quality` (Select: Good, Partial, None)
+
 ### Optional (ops / debugging)
 
 - `Sync Status` (Select: created, updated)
