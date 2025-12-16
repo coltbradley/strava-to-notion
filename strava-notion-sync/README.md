@@ -252,6 +252,45 @@ If too many activities fail, the job exits loudly instead of silently corrupting
 
 ⸻
 
+## Best practices for running this workflow
+
+- **Start with a small window**
+  - Keep the default 30‑day window while you validate behavior.
+  - Once you trust it, you can extend history by temporarily increasing the `days` argument in `sync_strava_to_notion()` and running locally.
+
+- **Stabilize your Notion schema early**
+  - Create and name properties exactly as listed above, then avoid renaming them.
+  - If you do change names, expect one “transition run” where some fields may not backfill.
+
+- **Let GitHub Actions be the primary runner**
+  - Use local runs for debugging or one‑off backfills.
+  - For day‑to‑day usage, rely on the scheduled workflow so you don’t have overlapping manual + scheduled jobs fighting over the same data.
+
+- **Watch logs after any change**
+  - After you change Notion properties, Strava app settings, or secrets, watch the next GitHub Actions run.
+  - Confirm:
+    - Activities fetched count is non‑zero
+    - Created/updated numbers look sane
+    - Failed count is low, and any errors are understandable (e.g., schema mismatch you just introduced).
+
+- **Treat secrets as production credentials**
+  - Rotate Strava and Notion credentials if you ever suspect they’ve leaked.
+  - Prefer GitHub Actions secrets over storing tokens in local `.env` files on multiple machines.
+
+- **Don’t worry about occasional failures**
+  - The script has retry/backoff and a failure threshold; transient 429/5xx errors will usually self‑heal.
+  - If a run fails hard, fix the root cause and re‑run—the logic is idempotent, so you won’t create duplicates.
+
+- **Validate HR‑related metrics on a few key workouts**
+  - Pick 2–3 benchmark sessions (steady long run, tempo, easy run).
+  - Compare:
+    - Average HR and pace in Strava vs Notion
+    - HR zone minutes vs your intuition for that workout
+    - Drift (%) vs whether the run “felt” decoupled or not.
+  - Once they line up, you can generally trust the metrics for day‑to‑day use.
+
+⸻
+
 Design principles
 	•	Stability over completeness
 	•	Derived metrics, not raw streams
