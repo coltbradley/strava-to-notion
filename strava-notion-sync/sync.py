@@ -210,18 +210,26 @@ class StravaClient:
             return None
 
     def get_activity_hr_stream(self, activity_id: int) -> Optional[Dict[str, List[int]]]:
-        """Fetch heart rate + time streams for an activity."""
+        """Fetch heart rate + time + velocity streams for an activity."""
         url = f"{self.base_url}/activities/{activity_id}/streams"
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        params = {"keys": "heartrate,time", "key_by_type": "true"}
+        # We request heartrate, time, and velocity_smooth (m/s) in a single call.
+        params = {"keys": "heartrate,time,velocity_smooth", "key_by_type": "true"}
         try:
             response = http_request_with_retries("GET", url, headers=headers, params=params)
             data = response.json()
             hr_stream = data.get("heartrate", {}).get("data")
             time_stream = data.get("time", {}).get("data")
+            vel_stream = data.get("velocity_smooth", {}).get("data")
+
             if not hr_stream or not time_stream:
                 return None
-            return {"hr": hr_stream, "time": time_stream}
+
+            # Velocity is only required for drift; zones can still work without it.
+            result: Dict[str, List[int]] = {"hr": hr_stream, "time": time_stream}
+            if vel_stream:
+                result["vel"] = vel_stream
+            return result
         except requests.exceptions.RequestException as e:
             logger.warning(f"Could not fetch HR stream for activity {activity_id}: {e}")
             return None
@@ -822,6 +830,12 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
                 hr_zone_minutes = StravaClient.compute_hr_zone_minutes(streams, hr_zones)
                 if hr_zone_minutes:
                     activity["_hr_zone_minutes"] = hr_zone_minutes
+                else:
+                    logger.debug(
+                        "HR zones not computed for activity %s (%s): insufficient stream data",
+                        activity.get("name"),
+                        activity_id,
+                    )
 
             # Drift metrics only if basic criteria + Good data
             if basic_drift_eligible and coverage_ok:
@@ -831,6 +845,19 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
                 if drift_metrics is not None:
                     activity["_drift_metrics"] = drift_metrics
                     activity["_drift_eligible"] = True
+                else:
+                    logger.debug(
+                        "HR drift not computed for activity %s (%s): could not derive stable metrics",
+                        activity.get("name"),
+                        activity_id,
+                    )
+            elif basic_drift_eligible and not coverage_ok:
+                logger.debug(
+                    "Activity %s (%s) drift-eligible by type/length but HR data quality is %s; skipping drift",
+                    activity.get("name"),
+                    activity_id,
+                    activity.get("_hr_data_quality"),
+                )
         
         # Find existing page
         existing_page_id = existing_map.get(activity_id)
