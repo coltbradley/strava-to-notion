@@ -234,6 +234,37 @@ class StravaClient:
             logger.warning(f"Could not fetch HR stream for activity {activity_id}: {e}")
             return None
 
+    def get_activity_primary_photo_url(self, activity_id: int) -> Optional[str]:
+        """
+        Fetch the primary photo URL for an activity, if available.
+
+        Note: Photos may only be available if your Strava privacy settings allow
+        API access to images. This method returns a single representative URL.
+        """
+        url = f"{self.base_url}/activities/{activity_id}"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        params = {
+            "include_all_efforts": "false",
+            "photo_sources": "true",
+        }
+        try:
+            response = http_request_with_retries("GET", url, headers=headers, params=params)
+            data = response.json()
+            photos = data.get("photos") or {}
+            primary = photos.get("primary") or {}
+            urls = primary.get("urls") or {}
+            # Prefer a higher-res key if present, otherwise any URL
+            for key in ("1200", "600", "300"):
+                if key in urls:
+                    return urls[key]
+            # Fallback: first URL in the dict, if any
+            if urls:
+                return next(iter(urls.values()))
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.debug("Could not fetch primary photo for activity %s: %s", activity_id, e)
+            return None
+
     @staticmethod
     def compute_hr_zone_minutes(
         hr_stream: Dict[str, List[int]], zones: List[Dict]
@@ -449,6 +480,36 @@ class NotionClient:
                 # For non-API errors, don't blindly retry
                 raise
     
+    def _database_query(self, **query_params: Any) -> Dict:
+        """
+        Wrapper around Notion database query that works across SDK versions.
+
+        Prefers the official databases.query method; if unavailable, falls back
+        to a raw HTTP request to /databases/{id}/query.
+        """
+        # Preferred path: databases.query exists on the SDK endpoint
+        if hasattr(self.client.databases, "query"):
+            return self._notion_call_with_retries(
+                getattr(self.client.databases, "query"),
+                **query_params,
+            )
+
+        # Fallback path for older SDKs: call REST API directly
+        database_id = query_params.pop("database_id")
+        url = f"https://api.notion.com/v1/databases/{database_id}/query"
+        headers = {
+            "Authorization": f"Bearer {self.client.auth}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28",
+        }
+        response = http_request_with_retries(
+            "POST",
+            url,
+            headers=headers,
+            json=query_params,
+        )
+        return response.json()
+    
     def get_existing_activity_pages(self, days: int = 30) -> Dict[str, str]:
         """
         Get existing activity pages from Notion within date range.
@@ -475,9 +536,7 @@ class NotionClient:
                 query_params["start_cursor"] = start_cursor
             
             try:
-                response = self._notion_call_with_retries(
-                    self.client.databases.query, **query_params
-                )
+                response = self._database_query(**query_params)
                 
                 for page in response.get("results", []):
                     props = page.get("properties", {})
@@ -503,8 +562,7 @@ class NotionClient:
     def find_page_by_activity_id(self, activity_id: str) -> Optional[str]:
         """Find a Notion page by Activity ID. Returns page_id if found, None otherwise."""
         try:
-            response = self._notion_call_with_retries(
-                self.client.databases.query,
+            response = self._database_query(
                 database_id=self.database_id,
                 filter={
                     "property": "Activity ID",
@@ -699,6 +757,11 @@ class NotionClient:
         if hr_data_quality:
             properties["HR Data Quality"] = {"select": {"name": hr_data_quality}}
 
+        # Primary photo URL (optional)
+        photo_url = activity.get("_photo_url")
+        if photo_url:
+            properties["Photo URL"] = {"url": photo_url}
+
         return properties
 
 
@@ -760,6 +823,10 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
 
     # Fetch HR zones once for the athlete
     hr_zones = strava.get_athlete_zones()
+    if hr_zones:
+        logger.info("Strava HR zones loaded: %d zones", len(hr_zones))
+    else:
+        logger.info("Strava HR zones not available; HR zone minutes will be skipped")
     
     # Get existing activities from Notion (batch query)
     try:
@@ -789,6 +856,7 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
         activity["_drift_metrics"] = None
         activity["_drift_eligible"] = False
         activity["_hr_data_quality"] = "None"
+        activity["_photo_url"] = None
 
         # Determine if this activity is eligible for drift analysis
         min_moving_time_s = 20 * 60  # 20 minutes
@@ -858,9 +926,16 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
                     activity_id,
                     activity.get("_hr_data_quality"),
                 )
-        
-        # Find existing page
+
+        # Fetch primary photo URL only when creating a new page (no existing_page_id)
         existing_page_id = existing_map.get(activity_id)
+        if not existing_page_id:
+            photo_url = strava.get_activity_primary_photo_url(activity.get("id"))
+            if photo_url:
+                activity["_photo_url"] = photo_url
+        
+        # Find existing page (may have already been looked up above for photos)
+        existing_page_id = existing_map.get(activity_id) or existing_page_id
         if not existing_page_id:
             # Fallback to per-activity search if not in batch map
             existing_page_id = notion.find_page_by_activity_id(activity_id)
