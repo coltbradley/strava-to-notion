@@ -95,6 +95,52 @@ class StravaClient:
         logger.info(f"Total activities fetched from Strava: {len(all_activities)}")
         return all_activities
 
+    def get_athlete_zones(self) -> Optional[List[Dict]]:
+        """Fetch athlete heart rate zones from Strava."""
+        url = f"{self.base_url}/athlete/zones"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("heart_rate", {}).get("zones")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Could not fetch Strava HR zones; HR zone metrics will be skipped: {e}")
+            return None
+
+    def get_activity_hr_stream(self, activity_id: int) -> Optional[List[int]]:
+        """Fetch heart rate stream for an activity (per-second samples)."""
+        url = f"{self.base_url}/activities/{activity_id}/streams"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        params = {"keys": "heartrate", "key_by_type": "true"}
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            hr_stream = data.get("heartrate", {}).get("data")
+            if not hr_stream:
+                return None
+            return hr_stream
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Could not fetch HR stream for activity {activity_id}: {e}")
+            return None
+
+    @staticmethod
+    def compute_hr_zone_minutes(hr_stream: List[int], zones: List[Dict]) -> Optional[Dict[int, float]]:
+        """Compute minutes per HR zone given a stream and zone definitions."""
+        if not hr_stream or not zones:
+            return None
+        zone_counts = {idx + 1: 0 for idx in range(len(zones))}
+        for hr in hr_stream:
+            for idx, zone in enumerate(zones):
+                min_hr = zone.get("min", 0)
+                max_hr = zone.get("max")  # may be None for last zone
+                if hr >= min_hr and (max_hr is None or hr < max_hr):
+                    zone_counts[idx + 1] += 1
+                    break
+        # Convert seconds to minutes, rounded to 2 decimals
+        return {zone: round(seconds / 60, 2) for zone, seconds in zone_counts.items()}
+
 
 class NotionClient:
     """Client for interacting with Notion API with upsert support."""
@@ -291,6 +337,12 @@ class NotionClient:
             "date": {"start": now.isoformat()}
         }
         
+        # Heart rate zone summaries (if already computed and attached)
+        hr_zones = activity.get("_hr_zone_minutes")
+        if hr_zones:
+            for zone_num, minutes in hr_zones.items():
+                properties[f"HR Zone {zone_num} (min)"] = {"number": minutes}
+
         return properties
 
 
@@ -349,6 +401,9 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
     if not activities:
         logger.info("No activities found to sync")
         return
+
+    # Fetch HR zones once for the athlete
+    hr_zones = strava.get_athlete_zones()
     
     # Get existing activities from Notion (batch query)
     try:
@@ -368,6 +423,14 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
     
     for activity in activities:
         activity_id = str(activity.get("id"))
+        has_hr = activity.get("has_heartrate")
+        # Attach HR zone minutes if available and HR data exists
+        if hr_zones and has_hr:
+            hr_stream = strava.get_activity_hr_stream(activity.get("id"))
+            hr_zone_minutes = StravaClient.compute_hr_zone_minutes(hr_stream, hr_zones) if hr_stream else None
+            if hr_zone_minutes:
+                # Attach computed metrics to activity for later conversion
+                activity["_hr_zone_minutes"] = hr_zone_minutes
         
         # Find existing page
         existing_page_id = existing_map.get(activity_id)

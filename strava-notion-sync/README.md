@@ -1,218 +1,262 @@
 # Strava → Notion Workout Sync
 
-Automated pipeline that syncs recent Strava activities into a Notion database for AI-powered training insights.
+This project automatically syncs your Strava workouts into a Notion database so you can review training patterns, annotate sessions, and use Notion (including Notion AI) as a thinking and reflection layer.
 
-## Features
+It is designed to be **reliable, explicit, and boring in the best way**.
 
-- ✅ OAuth refresh token flow for Strava (no manual token renewal)
-- ✅ Upsert logic (creates new activities or updates existing ones)
-- ✅ Idempotent syncs (no duplicates)
-- ✅ Batch query optimization for efficiency
-- ✅ Comprehensive error handling and logging
-- ✅ Runs unattended via GitHub Actions (daily schedule + manual trigger)
-- ✅ Unit conversions (meters → miles/feet, pace calculations)
-- ✅ Graceful handling of missing optional Notion properties
+Once set up, it runs unattended.
 
-## What This Does (Plain English)
+---
 
-- Pulls your recent Strava activities (default: last 30 days).
-- For each activity, it either **creates** a new row in your Notion “Workouts” database or **updates** the existing one that matches the Strava Activity ID.
-- It writes only the “system fields” (metrics and links). Your own notes/reflections in Notion stay untouched.
-- No second-by-second GPS/HR stream data—only high-level activity metrics.
-- Runs on a schedule via GitHub Actions, so no manual MFA or logins after setup.
+## What this does
 
-### Data that moves from Strava → Notion
-- Activity ID, name, date, sport type
-- Duration (elapsed time), moving time, distance (converted to miles), elevation gain (converted to feet)
-- Average/max heart rate (if present), pace for running/ walking/ hiking (if distance > 0)
+- Pulls your recent activities from Strava (default: last 30 days)
+- Creates **one row per activity** in a Notion database called **Workouts**
+- Uses the Strava **Activity ID** to avoid duplicates
+- Updates existing rows if an activity changes
+- Writes only system-owned fields (metrics, links, sync metadata)
+- Preserves any notes, reflections, or ratings you add in Notion
+- Runs automatically on a schedule via GitHub Actions
+
+Strava remains the source of truth.  
+Notion is where interpretation happens.
+
+---
+
+## What this does *not* do
+
+By design, this project avoids:
+
+- Real-time syncing (webhooks)
+- Storing second-by-second GPS or HR data in Notion
+- Replacing Strava/Garmin analytics
+- Advanced training load modeling (CTL / ATL / TSB)
+- Automatically creating or modifying your Notion schema
+
+The goal is clarity and stability, not maximal data ingestion.
+
+---
+
+## How it works (high level)
+Strava API
+↓
+Python sync script
+↓
+Notion database (Workouts)
+↓
+Dashboards, reflection, Notion AI
+
+---
+
+## Data synced per activity
+
+Each Strava activity maps to **one Notion row**.
+
+### Always synced (system fields)
+
+- Activity ID (unique key)
+- Activity name
+- Date & start time
+- Sport type
+- Duration (minutes)
+- Distance (miles)
+- Elevation gain (feet)
 - Strava activity URL
-- Last synced timestamp, basic sync status (created/updated) if you add that property
+- Last synced timestamp
 
-## Setup
+### Synced when available
 
-### 1. Strava API Setup
+- Average heart rate
+- Max heart rate
+- Moving time (minutes)
+- Average pace (min/mi for running, walking, hiking)
+
+### Never overwritten
+
+- Subjective notes
+- RPE or effort ratings
+- Injury notes
+- Any custom reflection fields you add
+
+You can safely write in Notion without worrying about the sync undoing your work.
+
+---
+
+## Heart rate zones (important)
+
+This project **supports heart rate zones per activity**, with an important constraint.
+
+### What is possible
+
+- The script can compute **time-in-zone per activity** (e.g. Zone 1–5)
+- It does this by:
+  1. Fetching your **athlete HR zone definitions** from Strava
+  2. Pulling the **heart rate stream** for each activity (seconds-level)
+  3. Aggregating that stream into **zone totals**
+- Only the **derived summary** (minutes per zone) is stored in Notion  
+  Raw HR streams are **not** saved.
+
+This keeps Notion lightweight while still enabling meaningful analysis.
+
+### What this requires
+
+- Heart rate data must be present for the activity
+- HR zones must be defined in your Strava account
+- An extra API call per activity (acceptable for daily syncs)
+
+### Recommended Notion properties for HR zones
+
+If you want HR zones, add these **optional** number fields:
+
+- `HR Zone 1 (min)`
+- `HR Zone 2 (min)`
+- `HR Zone 3 (min)`
+- `HR Zone 4 (min)`
+- `HR Zone 5 (min)`
+
+If these properties do not exist, the script will skip them gracefully.
+
+---
+
+## Notion database setup
+
+Create a database called **Workouts** with the following properties.
+
+### Required properties (exact names matter — copy/paste these)
+
+- `Name` (Title)
+- `Activity ID` (Rich text)
+- `Date` (Date)
+- `Sport` (Select)
+- `Duration (min)` (Number)
+- `Distance (mi)` (Number)
+- `Elevation (ft)` (Number)
+
+### Strongly recommended
+
+- `Strava URL` (URL)
+- `Last Synced` (Date)
+
+### Optional (metrics)
+
+- `Avg HR` (Number)
+- `Max HR` (Number)
+- `Avg Pace (min/mi)` (Number)
+- `Moving Time (min)` (Number)
+
+### Optional (heart rate zones)
+
+- `HR Zone 1 (min)`
+- `HR Zone 2 (min)`
+- `HR Zone 3 (min)`
+- `HR Zone 4 (min)`
+- `HR Zone 5 (min)`
+
+### Optional (ops / debugging)
+
+- `Sync Status` (Select: created, updated)
+
+If a property is missing, the sync will skip it and continue.
+
+---
+
+## Setup overview
+
+One-time setup consists of three parts:
+
+1. Authorize Strava API access (read-only)
+2. Create a Notion integration and database
+3. Store credentials as GitHub repository secrets
+
+After that, the sync runs automatically.
+
+---
+
+## Strava API setup (once)
 
 1. Go to https://www.strava.com/settings/api
-2. Click "Create App" or use an existing application
-3. Fill in:
-   - **Application Name**: e.g., "Notion Sync"
-   - **Category**: Analytics
-   - **Website**: Your website (can be placeholder)
-   - **Authorization Callback Domain**: `localhost` (for local testing)
-4. Note your **Client ID** and **Client Secret**
+2. Create a new application
+3. Use:
+   - Category: Analytics
+   - Authorization callback domain: `localhost`
+4. Save your **Client ID** and **Client Secret**
 
-#### Obtaining a Refresh Token
+### Getting a refresh token
 
-To get a refresh token, you need to complete the OAuth flow:
+1. Visit (replace `YOUR_CLIENT_ID`):
 
-1. Visit this URL (replace `YOUR_CLIENT_ID` with your actual Client ID):
-   ```
-   https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost&approval_prompt=force&scope=activity:read_all
-   ```
-2. Authorize the application
-3. You'll be redirected to `http://localhost/?code=...`
-4. Copy the `code` parameter from the URL
-5. Exchange the code for tokens using curl or Postman:
-   ```bash
-   curl -X POST https://www.strava.com/oauth/token \
-     -d client_id=YOUR_CLIENT_ID \
-     -d client_secret=YOUR_CLIENT_SECRET \
-     -d code=CODE_FROM_URL \
-     -d grant_type=authorization_code
-   ```
-6. Save the `refresh_token` from the response (this is what you'll use in the sync script)
+https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost&approval_prompt=force&scope=activity:read_all
+2. Approve access
+3. Copy the `code` from the redirect URL
+4. Exchange it for tokens:
+```bash
+curl -X POST https://www.strava.com/oauth/token \
+  -d client_id=YOUR_CLIENT_ID \
+  -d client_secret=YOUR_CLIENT_SECRET \
+  -d code=CODE_FROM_URL \
+  -d grant_type=authorization_code
 
-**Note**: The refresh token doesn't expire, but access tokens do. The script automatically refreshes access tokens using your refresh token.
+  	5.	Save the refresh_token
 
-### 2. Notion API Setup
+Access tokens expire. Refresh tokens do not (unless revoked).
 
-1. Go to https://www.notion.so/my-integrations
-2. Click "+ New integration"
-3. Give it a name (e.g., "Strava Sync")
-4. Select your workspace
-5. Click "Submit" and copy the **Internal Integration Token** (this is your `NOTION_TOKEN`)
+⸻
 
-#### Creating the Notion Database
+## Required secrets (names to paste into GitHub / local env)
 
-1. Create a new database in Notion called "Workouts"
-2. Add the following properties (exact names matter):
-
-   **Required Properties:**
-   - `Name` (Title)
-   - `Activity ID` (Rich text) - This is the unique key
-   - `Date` (Date)
-   - `Sport` (Select) - Options: Run, Ride, Walk, Hike, etc.
-   - `Duration (min)` (Number)
-   - `Distance (mi)` (Number)
-   - `Elevation (ft)` (Number)
-
-   **Optional Properties** (add if you want them):
-   - `Avg HR` (Number)
-   - `Max HR` (Number)
-   - `Avg Pace (min/mi)` (Number)
-   - `Moving Time (min)` (Number)
-   - `Strava URL` (URL)
-   - `Last Synced` (Date)
-   - `Sync Status` (Select) - Options: created, updated
-
-3. **Share the database with your integration:**
-   - Open the database
-   - Click "..." menu → "Connections"
-   - Find your integration and connect it
-
-4. **Get the Database ID:**
-   - Open the database in Notion
-   - The URL looks like: `https://www.notion.so/workspace/DATABASE_ID?v=...`
-   - Copy the `DATABASE_ID` (the 32-character hex string between the workspace name and the `?`)
-
-### 3. Local Development
-
-1. **Create a virtual environment:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   cd strava-notion-sync
-   pip install -r requirements.txt
-   ```
-
-3. **Set environment variables:**
-   ```bash
-   export STRAVA_CLIENT_ID="your_client_id"
-   export STRAVA_CLIENT_SECRET="your_client_secret"
-   export STRAVA_REFRESH_TOKEN="your_refresh_token"
-   export NOTION_TOKEN="your_notion_token"
-   export NOTION_DATABASE_ID="your_database_id"
-   ```
-
-   Or create a `.env` file (don't commit it!) and use `python-dotenv`:
-   ```bash
-   pip install python-dotenv
-   ```
-   Then load it in your script or use `export $(cat .env | xargs)`
-
-4. **Run the sync script:**
-   ```bash
-   python sync.py
-   ```
-
-### 3.5 Secrets You Need (and where to get them)
-
-| Secret name | Where to get it | What it is |
+| Name | Purpose | Where to find it |
 | --- | --- | --- |
-| `STRAVA_CLIENT_ID` | Strava settings → API → your app | The numeric client ID of your Strava app |
-| `STRAVA_CLIENT_SECRET` | Strava settings → API → your app | The client secret of your Strava app |
-| `STRAVA_REFRESH_TOKEN` | Exchange auth code at `https://www.strava.com/oauth/token` (see steps above) | Long-lived refresh token used to get access tokens automatically |
-| `NOTION_TOKEN` | Notion → My Integrations → your integration → Internal Integration Token | Auth token for the Notion API |
-| `NOTION_DATABASE_ID` | In your Notion database URL (32-char hex before the `?`) | The ID of your “Workouts” database |
+| `STRAVA_CLIENT_ID` | Strava app client ID | Strava Settings → API |
+| `STRAVA_CLIENT_SECRET` | Strava app client secret | Strava Settings → API |
+| `STRAVA_REFRESH_TOKEN` | Long-lived token to get access tokens | Exchange auth code at `https://www.strava.com/oauth/token` |
+| `NOTION_TOKEN` | Notion Internal Integration Token | Notion → My Integrations → your integration |
+| `NOTION_DATABASE_ID` | The Workouts DB ID | In the Notion DB URL (32-char hex before the `?`) |
 
-### 4. GitHub Actions Setup
+For local use, set these as environment variables. For GitHub Actions, create repository secrets with these exact names.
 
-1. **Add GitHub Secrets:**
-   - Go to your repository → Settings → Secrets and variables → Actions
-   - Click "New repository secret" and add:
-     - `STRAVA_CLIENT_ID`
-     - `STRAVA_CLIENT_SECRET`
-     - `STRAVA_REFRESH_TOKEN`
-     - `NOTION_TOKEN`
-     - `NOTION_DATABASE_ID`
+⸻
 
-2. **Verify the workflow:**
-   - Go to Actions tab in your repository
-   - The workflow runs daily at 6 AM UTC
-   - You can also trigger it manually via "Run workflow"
+GitHub Actions automation
+	•	The sync runs once per day on GitHub’s infrastructure
+	•	You can trigger it manually from the Actions tab
+	•	Re-running the job is safe and idempotent
 
-## How It Works
+Required secrets
+	•	STRAVA_CLIENT_ID
+	•	STRAVA_CLIENT_SECRET
+	•	STRAVA_REFRESH_TOKEN
+	•	NOTION_TOKEN
+	•	NOTION_DATABASE_ID
 
-1. **Token Refresh**: The script automatically refreshes your Strava access token using the refresh token
-2. **Fetch Activities**: Retrieves activities from Strava for the last 30 days (configurable)
-3. **Batch Query**: Queries Notion once to get existing activities in the date range
-4. **Upsert Logic**: For each Strava activity:
-   - If Activity ID exists in Notion → Update the page
-   - If not → Create a new page
-5. **Error Handling**: Continues processing even if individual activities fail, but aborts if failure rate exceeds 20%
+⸻
 
-## Logging
+How the sync behaves
+	1.	Refreshes Strava access token
+	2.	Fetches recent activities
+	3.	Optionally fetches HR streams to compute time in HR zones
+    	4.	Queries Notion for existing Activity IDs
+	5.	Creates or updates rows accordingly
+	6.	Logs counts (fetched, created, updated, failed)
 
-The script provides structured logging:
-- `Fetched from Strava`: Total activities retrieved
-- `Created in Notion`: New pages created
-- `Updated in Notion`: Existing pages updated
-- `Failed`: Activities that couldn't be synced
+If too many activities fail, the job exits loudly instead of silently corrupting data.
 
-## Troubleshooting
+⸻
 
-### "Failed to refresh Strava access token"
-- Your refresh token may have been revoked
-- Regenerate tokens using the OAuth flow (see Step 1)
+Design principles
+	•	Stability over completeness
+	•	Derived metrics, not raw streams
+	•	Clear ownership of fields (system vs human)
+	•	Notion as a thinking layer, not a data warehouse
 
-### "Property doesn't exist" warnings
-- The script skips properties that don't exist in your Notion database
-- This is expected if you haven't added optional properties
-- Check the logs to see which properties were skipped
+This is meant to fade into the background and support better decisions over time.
 
-### "Failed to initialize Notion client"
-- Verify your `NOTION_TOKEN` is correct
-- Ensure the integration is connected to your database
+⸻
 
-### Activities not syncing
-- Check that your Notion database has the required properties with exact names
-- Verify the database is shared with your integration
-- Check the Activity logs in GitHub Actions for detailed error messages
+Possible future extensions (verified feasible)
+	•	Longer history backfills
+	•	Weekly or monthly rollups
+	•	AI-generated summaries written into Notion
+	•	Flags for sudden load increases
+	•	Strava webhooks for near-real-time sync (requires hosted endpoint)
 
-## Notes
-
-- **Idempotency**: Running the sync multiple times won't create duplicates. Activities are keyed by Strava Activity ID.
-- **User Data Protection**: The script only updates system fields. User-entered fields (like reflection notes) are preserved.
-- **Rate Limiting**: The script includes small delays to respect Notion API rate limits.
-- **Date Range**: By default, syncs last 30 days. Adjust the `days` parameter in `sync.py` if needed.
-
-## Non-Goals (V1)
-
-- Webhooks / real-time syncing
-- Second-by-second GPS/HR streams
-- Advanced analytics (CTL/ATL/TSB, HRV trends)
-- Auto-creating Notion database schema
+   
