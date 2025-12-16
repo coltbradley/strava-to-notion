@@ -13,6 +13,21 @@ Automated pipeline that syncs recent Strava activities into a Notion database fo
 - ✅ Unit conversions (meters → miles/feet, pace calculations)
 - ✅ Graceful handling of missing optional Notion properties
 
+## What This Does (Plain English)
+
+- Pulls your recent Strava activities (default: last 30 days).
+- For each activity, it either **creates** a new row in your Notion “Workouts” database or **updates** the existing one that matches the Strava Activity ID.
+- It writes only the “system fields” (metrics and links). Your own notes/reflections in Notion stay untouched.
+- No second-by-second GPS/HR stream data—only high-level activity metrics.
+- Runs on a schedule via GitHub Actions, so no manual MFA or logins after setup.
+
+### Data that moves from Strava → Notion
+- Activity ID, name, date, sport type
+- Duration (elapsed time), moving time, distance (converted to miles), elevation gain (converted to feet)
+- Average/max heart rate (if present), pace for running/ walking/ hiking (if distance > 0)
+- Strava activity URL
+- Last synced timestamp, basic sync status (created/updated) if you add that property
+
 ## Setup
 
 ### 1. Strava API Setup
@@ -123,6 +138,16 @@ To get a refresh token, you need to complete the OAuth flow:
    ```bash
    python sync.py
    ```
+
+### 3.5 Secrets You Need (and where to get them)
+
+| Secret name | Where to get it | What it is |
+| --- | --- | --- |
+| `STRAVA_CLIENT_ID` | Strava settings → API → your app | The numeric client ID of your Strava app |
+| `STRAVA_CLIENT_SECRET` | Strava settings → API → your app | The client secret of your Strava app |
+| `STRAVA_REFRESH_TOKEN` | Exchange auth code at `https://www.strava.com/oauth/token` (see steps above) | Long-lived refresh token used to get access tokens automatically |
+| `NOTION_TOKEN` | Notion → My Integrations → your integration → Internal Integration Token | Auth token for the Notion API |
+| `NOTION_DATABASE_ID` | In your Notion database URL (32-char hex before the `?`) | The ID of your “Workouts” database |
 
 ### 4. GitHub Actions Setup
 
