@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 # Sports where pace / drift analysis makes sense
 PACE_SPORTS = {"Run", "TrailRun", "Walk", "Hike", "VirtualRun"}
 
+# Sports that are always indoors (skip weather lookup)
+INDOOR_SPORTS = {"WeightTraining", "Workout", "Crossfit"}
+
 
 def _token_fingerprint(token: str) -> str:
     """Return a short, non-reversible fingerprint for a token for debugging."""
@@ -452,6 +455,125 @@ class StravaClient:
         }
 
 
+class WeatherClient:
+    """Client for fetching historical weather data using Open-Meteo API."""
+    
+    def __init__(self):
+        self.base_url = "https://archive-api.open-meteo.com/v1/archive"
+    
+    def get_weather_for_activity(
+        self, latitude: float, longitude: float, start_time: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch weather data for a specific location and time.
+        
+        Args:
+            latitude: Activity start latitude
+            longitude: Activity start longitude
+            start_time: Activity start datetime (timezone-aware)
+        
+        Returns:
+            Dict with temp_f, conditions, wind_mph, humidity, or None if unavailable
+        """
+        try:
+            # Open-Meteo expects ISO format dates
+            date_str = start_time.strftime("%Y-%m-%d")
+            
+            # Request hourly data for the date
+            params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": date_str,
+                "end_date": date_str,
+                "hourly": "temperature_2m,weathercode,windspeed_10m,relativehumidity_2m",
+                "temperature_unit": "fahrenheit",
+                "windspeed_unit": "mph",
+            }
+            
+            response = http_request_with_retries("GET", self.base_url, params=params)
+            data = response.json()
+            
+            hourly = data.get("hourly", {})
+            temps = hourly.get("temperature_2m", [])
+            weathercodes = hourly.get("weathercode", [])
+            windspeeds = hourly.get("windspeed_10m", [])
+            humidities = hourly.get("relativehumidity_2m", [])
+            
+            if not temps or not weathercodes:
+                logger.debug(f"No weather data available for {date_str} at ({latitude}, {longitude})")
+                return None
+            
+            # Find the hour that matches the activity start time
+            activity_hour = start_time.hour
+            if activity_hour >= len(temps):
+                # Use last available hour if activity hour is beyond data
+                activity_hour = len(temps) - 1
+            
+            temp_f = temps[activity_hour] if activity_hour < len(temps) else None
+            weathercode = weathercodes[activity_hour] if activity_hour < len(weathercodes) else None
+            wind_mph = windspeeds[activity_hour] if activity_hour < len(windspeeds) else None
+            humidity = humidities[activity_hour] if activity_hour < len(humidities) else None
+            
+            if temp_f is None or weathercode is None:
+                return None
+            
+            # Convert WMO weather code to human-readable conditions
+            conditions = self._weathercode_to_text(weathercode)
+            
+            return {
+                "temp_f": temp_f,
+                "conditions": conditions,
+                "wind_mph": wind_mph or 0.0,
+                "humidity": humidity or 0.0,
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error fetching weather for ({latitude}, {longitude}) at {start_time}: {e}")
+            return None
+    
+    @staticmethod
+    def _weathercode_to_text(code: int) -> str:
+        """
+        Convert WMO weather code to human-readable description.
+        Based on WMO Weather interpretation codes (WW).
+        """
+        # Main condition categories
+        if code == 0:
+            return "Clear"
+        elif code in (1, 2, 3):
+            return "Partly cloudy" if code == 1 else "Cloudy"
+        elif code in (45, 48):
+            return "Fog"
+        elif code in (51, 53, 55):
+            return "Drizzle"
+        elif code in (61, 63, 65):
+            return "Rain"
+        elif code in (71, 73, 75):
+            return "Snow"
+        elif code in (80, 81, 82):
+            return "Rain showers"
+        elif code in (85, 86):
+            return "Snow showers"
+        elif code in (95, 96, 99):
+            return "Thunderstorm"
+        else:
+            return "Unknown"
+    
+    @staticmethod
+    def make_weather_summary(weather_data: Dict[str, Any]) -> str:
+        """
+        Format weather data into a concise summary string for outdoor activities.
+        
+        Example: "72°F, Clear, 5 mph wind, 65% humidity"
+        """
+        temp_f = weather_data.get("temp_f", 0)
+        conditions = weather_data.get("conditions", "Unknown").lower()
+        wind_mph = weather_data.get("wind_mph", 0)
+        humidity = weather_data.get("humidity", 0)
+        
+        return f"{temp_f:.0f}°F, {conditions}, {wind_mph:.0f} mph wind, {humidity:.0f}% humidity"
+
+
 class NotionClient:
     """Client for interacting with Notion API with upsert support."""
     
@@ -812,6 +934,19 @@ class NotionClient:
         if photo_url:
             properties["Photo URL"] = {"url": photo_url}
 
+        # Weather data (optional, only for outdoor activities)
+        weather = activity.get("_weather")
+        if weather:
+            temp_f = weather.get("temp_f")
+            if temp_f is not None:
+                properties["Temperature (°F)"] = {"number": round(temp_f, 1)}
+            
+            weather_summary = WeatherClient.make_weather_summary(weather)
+            if weather_summary:
+                properties["Weather Conditions"] = {
+                    "rich_text": [{"text": {"content": weather_summary}}]
+                }
+
         return properties
 
 
@@ -859,6 +994,9 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
     except Exception as e:
         logger.error(f"Failed to initialize Notion client: {e}")
         sys.exit(1)
+    
+    # Initialize weather client
+    weather_client = WeatherClient()
     
     # Fetch activities from Strava
     try:
@@ -913,6 +1051,7 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
         activity["_drift_eligible"] = False
         activity["_hr_data_quality"] = "None"
         activity["_photo_url"] = None
+        activity["_weather"] = None
 
         # Determine if this activity is eligible for drift analysis
         min_moving_time_s = 20 * 60  # 20 minutes
@@ -989,6 +1128,23 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
             photo_url = strava.get_activity_primary_photo_url(activity.get("id"))
             if photo_url:
                 activity["_photo_url"] = photo_url
+        
+        # Fetch weather data for outdoor activities with location
+        if sport_type not in INDOOR_SPORTS:
+            start_lat = activity.get("start_latitude")
+            start_lng = activity.get("start_longitude")
+            if start_lat and start_lng:
+                try:
+                    # Parse start_date to get datetime for weather lookup
+                    start_date = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
+                    weather = weather_client.get_weather_for_activity(start_lat, start_lng, start_date)
+                    if weather:
+                        activity["_weather"] = weather
+                        logger.debug(
+                            f"Weather fetched for activity {activity_id}: {WeatherClient.make_weather_summary(weather)}"
+                        )
+                except Exception as e:
+                    logger.debug(f"Could not fetch weather for activity {activity_id}: {e}")
         
         # Find existing page (may have already been looked up above for photos)
         existing_page_id = existing_map.get(activity_id) or existing_page_id

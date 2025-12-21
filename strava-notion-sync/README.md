@@ -162,6 +162,13 @@ Create a database called **Workouts** with the following properties.
 - `Drift Eligible` (Checkbox)
 - `HR Data Quality` (Select: Good, Partial, None)
 
+### Optional (weather)
+
+- `Temperature (°F)` (Number)
+- `Weather Conditions` (Rich text) - Concise summary with temp, conditions, wind, and humidity
+
+**Note:** Weather data is only fetched for outdoor activities (runs, rides, hikes, etc.). Indoor activities like weight training will not include weather information. Weather is fetched based on the activity's start location and time using Open-Meteo's historical weather API.
+
 ### Optional (ops / debugging)
 
 - `Sync Status` (Select: created, updated)
