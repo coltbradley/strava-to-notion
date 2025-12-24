@@ -164,10 +164,14 @@ Create a database called **Workouts** with the following properties.
 
 ### Optional (weather)
 
-- `Temperature (°F)` (Number)
-- `Weather Conditions` (Rich text) - Concise summary with temp, conditions, wind, and humidity
+- `Temperature (°F)` (Number) - Temperature in Fahrenheit
+- `Weather Conditions` (Rich text) - Concise summary with temp, conditions, wind, and humidity (e.g., "72°F, clear, 5 mph wind, 65% humidity")
 
 **Note:** Weather data is only fetched for outdoor activities (runs, rides, hikes, etc.). Indoor activities like weight training will not include weather information. Weather is fetched based on the activity's start location and time using Open-Meteo's historical weather API.
+
+**Important:** The property names must match exactly:
+- `Temperature (°F)` (including the degree symbol and parentheses)
+- `Weather Conditions` (exact capitalization)
 
 ### Optional (ops / debugging)
 

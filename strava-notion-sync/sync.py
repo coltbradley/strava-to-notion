@@ -493,6 +493,11 @@ class WeatherClient:
             response = http_request_with_retries("GET", self.base_url, params=params)
             data = response.json()
             
+            # Check for API errors
+            if "error" in data or "reason" in data:
+                logger.warning(f"Open-Meteo API error: {data.get('reason', data.get('error', 'Unknown error'))}")
+                return None
+            
             hourly = data.get("hourly", {})
             temps = hourly.get("temperature_2m", [])
             weathercodes = hourly.get("weathercode", [])
@@ -500,7 +505,7 @@ class WeatherClient:
             humidities = hourly.get("relativehumidity_2m", [])
             
             if not temps or not weathercodes:
-                logger.debug(f"No weather data available for {date_str} at ({latitude}, {longitude})")
+                logger.info(f"No weather data available for {date_str} at ({latitude}, {longitude}) - temps: {len(temps) if temps else 0}, codes: {len(weathercodes) if weathercodes else 0}")
                 return None
             
             # Find the hour that matches the activity start time
@@ -528,7 +533,7 @@ class WeatherClient:
             }
             
         except Exception as e:
-            logger.debug(f"Error fetching weather for ({latitude}, {longitude}) at {start_time}: {e}")
+            logger.warning(f"Error fetching weather for ({latitude}, {longitude}) at {start_time}: {e}")
             return None
     
     @staticmethod
@@ -1137,14 +1142,19 @@ def sync_strava_to_notion(days: int = 30, failure_threshold: float = 0.2):
                 try:
                     # Parse start_date to get datetime for weather lookup
                     start_date = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
+                    logger.info(f"Fetching weather for activity {activity_id} at ({start_lat}, {start_lng}) on {start_date.date()}")
                     weather = weather_client.get_weather_for_activity(start_lat, start_lng, start_date)
                     if weather:
                         activity["_weather"] = weather
-                        logger.debug(
+                        logger.info(
                             f"Weather fetched for activity {activity_id}: {WeatherClient.make_weather_summary(weather)}"
                         )
+                    else:
+                        logger.info(f"No weather data returned for activity {activity_id}")
                 except Exception as e:
-                    logger.debug(f"Could not fetch weather for activity {activity_id}: {e}")
+                    logger.warning(f"Could not fetch weather for activity {activity_id}: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
         
         # Find existing page (may have already been looked up above for photos)
         existing_page_id = existing_map.get(activity_id) or existing_page_id
