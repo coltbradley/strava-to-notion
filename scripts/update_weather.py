@@ -199,24 +199,24 @@ def extract_activity_info(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def fetch_location_from_strava(
     activity_id: str,
-    strava_client_id: str,
-    strava_client_secret: str,
-    strava_refresh_token: str,
+    strava_client: Any,  # StravaClient instance (reused across calls)
 ) -> Optional[Tuple[float, float]]:
     """
     Fetch activity location (start_latitude, start_longitude) from Strava.
     
+    Args:
+        activity_id: Strava activity ID
+        strava_client: StravaClient instance (reused to avoid token refresh overhead)
+    
     Returns (lat, lng) tuple or None if not available.
     """
     # Import here to avoid circular imports
-    from sync import StravaClient, http_request_with_retries
+    from sync import http_request_with_retries
     
     try:
-        strava = StravaClient(strava_client_id, strava_client_secret, strava_refresh_token)
-        
         # Fetch single activity using Strava API
         url = f"https://www.strava.com/api/v3/activities/{activity_id}"
-        headers = {"Authorization": f"Bearer {strava.access_token}"}
+        headers = {"Authorization": f"Bearer {strava_client.access_token}"}
         
         response = http_request_with_retries("GET", url, headers=headers)
         activity = response.json()
@@ -224,9 +224,15 @@ def fetch_location_from_strava(
         if not activity:
             return None
         
+        # Strava API uses start_latlng (array format [lat, lng]) as the primary field
+        # Check start_latlng first (this is the standard field in Strava API)
+        start_latlng = activity.get("start_latlng")
+        if start_latlng and len(start_latlng) >= 2 and start_latlng[0] and start_latlng[1]:
+            return (float(start_latlng[0]), float(start_latlng[1]))
+        
+        # Fallback to separate fields (some API versions might use these)
         lat = activity.get("start_latitude")
         lng = activity.get("start_longitude")
-        
         if lat and lng:
             return (float(lat), float(lng))
         
@@ -355,6 +361,10 @@ def main():
     # Initialize Notion client
     notion_client = NotionClient(notion_token, workouts_db_id)
     
+    # Initialize Strava client once (reuse to avoid token refresh overhead)
+    from sync import StravaClient
+    strava_client = StravaClient(strava_client_id, strava_client_secret, strava_refresh_token)
+    
     # Process activities
     stats = {
         "total": len(activities),
@@ -389,9 +399,7 @@ def main():
         
         location = fetch_location_from_strava(
             activity_info["activity_id"],
-            strava_client_id,
-            strava_client_secret,
-            strava_refresh_token,
+            strava_client,  # Reuse the same client instance
         )
         
         if not location:

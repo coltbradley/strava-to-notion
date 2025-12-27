@@ -1900,8 +1900,15 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
         # Fetch weather data for ALL outdoor activities with location (both new and existing)
         # This ensures weather data is updated for existing activities as well
         if sport_type not in INDOOR_SPORTS:
-            start_lat = activity.get("start_latitude")
-            start_lng = activity.get("start_longitude")
+            # Strava API uses start_latlng (array format [lat, lng]) as the primary field
+            start_latlng = activity.get("start_latlng")
+            if start_latlng and len(start_latlng) >= 2 and start_latlng[0] is not None and start_latlng[1] is not None:
+                start_lat, start_lng = start_latlng[0], start_latlng[1]
+            else:
+                # Fallback to separate fields (if available)
+                start_lat = activity.get("start_latitude")
+                start_lng = activity.get("start_longitude")
+            
             if start_lat and start_lng:
                 try:
                     # Parse start_date to get datetime for weather lookup
