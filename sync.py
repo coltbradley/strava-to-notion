@@ -271,6 +271,34 @@ def http_request_with_retries(
     raise RuntimeError(f"Unknown error making request to {url}")
 
 
+def _validate_notion_database_id(database_id: str) -> None:
+    """
+    Validate that a Notion database ID is safe to use in URLs.
+    
+    Notion database IDs are 32-character hex strings (UUID without hyphens).
+    This validation prevents URL injection attacks.
+    
+    Raises:
+        ValueError: If database_id is invalid or contains unsafe characters
+    """
+    if not database_id:
+        raise ValueError("database_id cannot be empty")
+    
+    # Notion database IDs are 32-character hex strings
+    # Accept both with and without hyphens for flexibility
+    normalized = database_id.replace("-", "")
+    
+    if len(normalized) != 32:
+        raise ValueError(f"Invalid database_id format: expected 32 hex characters, got {len(normalized)}")
+    
+    if not all(c in "0123456789abcdefABCDEF" for c in normalized):
+        raise ValueError("Invalid database_id format: must contain only hex characters")
+    
+    # Additional safety: ensure no path traversal or URL-unsafe characters
+    if any(c in database_id for c in ["/", "\\", "?", "#", "&", "%", "\n", "\r"]):
+        raise ValueError("database_id contains unsafe characters")
+
+
 def _notion_database_query_http(notion_token: str, database_id: str, **query_params: Any) -> Dict:
     """
     Shared utility for querying Notion databases via HTTP (fallback for SDK compatibility).
@@ -280,12 +308,16 @@ def _notion_database_query_http(notion_token: str, database_id: str, **query_par
     
     Args:
         notion_token: Notion API token
-        database_id: Notion database ID
+        database_id: Notion database ID (validated for safety)
         **query_params: Additional query parameters (filter, sorts, start_cursor, etc.)
     
     Returns:
         Dict containing the API response (with 'results' key)
+    
+    Raises:
+        ValueError: If database_id is invalid
     """
+    _validate_notion_database_id(database_id)
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     headers = {
         "Authorization": f"Bearer {notion_token}",
@@ -1087,6 +1119,9 @@ class NotionSchemaCache:
         Returns:
             Set of property names, or None if schema loading failed
         """
+        # Validate database_id to prevent injection attacks
+        _validate_notion_database_id(database_id)
+        
         # Initialize if needed
         if cls._api_key != api_key or cls._client is None:
             cls.initialize(api_key)
@@ -1731,9 +1766,20 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
     Main sync function.
     
     Args:
-        days: Number of days to look back for activities
+        days: Number of days to look back for activities (must be positive, max 365)
         failure_threshold: Maximum fraction of activities that can fail before aborting (0.0-1.0)
+    
+    Raises:
+        ValueError: If parameters are invalid
     """
+    # Validate input parameters
+    if not isinstance(days, int) or days <= 0:
+        raise ValueError(f"days must be a positive integer, got: {days}")
+    if days > 365:
+        raise ValueError(f"days cannot exceed 365 (safety limit), got: {days}")
+    if not isinstance(failure_threshold, (int, float)) or not (0.0 <= failure_threshold <= 1.0):
+        raise ValueError(f"failure_threshold must be between 0.0 and 1.0, got: {failure_threshold}")
+    
     # Get credentials from environment variables
     strava_client_id = os.getenv("STRAVA_CLIENT_ID")
     strava_client_secret = os.getenv("STRAVA_CLIENT_SECRET")
@@ -2127,11 +2173,17 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
         stats_dir.mkdir(exist_ok=True)
         stats_file = stats_dir / "run_stats.json"
         
+        # Validate that stats_file is within expected directory (prevent path traversal)
+        expected_dir = Path(__file__).parent / "stats"
+        if not stats_file.resolve().is_relative_to(expected_dir.resolve()):
+            logger.warning("Stats file path validation failed, skipping stats persistence")
+            return
+        
         # Read existing stats (append to list)
         all_stats = []
         if stats_file.exists():
             try:
-                with open(stats_file, "r") as f:
+                with open(stats_file, "r", encoding="utf-8") as f:
                     existing = json.load(f)
                     if isinstance(existing, list):
                         all_stats = existing
@@ -2152,7 +2204,7 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
         ]
         
         # Write back
-        with open(stats_file, "w") as f:
+        with open(stats_file, "w", encoding="utf-8") as f:
             json.dump(all_stats, f, indent=2)
         
         logger.debug(f"Run stats persisted to {stats_file}")

@@ -32,7 +32,7 @@ def load_run_stats(stats_file: Path) -> List[Dict[str, Any]]:
         return []
     
     try:
-        with open(stats_file, "r") as f:
+        with open(stats_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
                 return data
@@ -556,7 +556,7 @@ def main():
     
     # Write to file (in repo root)
     output_file = repo_root / "weekly_status.md"
-    with open(output_file, "w") as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         f.write(report)
     
     # Also write JSON version (include new data)
@@ -568,7 +568,7 @@ def main():
         "database_access": db_access,
         "last_activity_weather": last_activity_weather,
     }
-    with open(json_file, "w") as f:
+    with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2)
     
     print(f"Report generated: {output_file}")

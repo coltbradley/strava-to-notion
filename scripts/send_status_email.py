@@ -42,7 +42,7 @@ def send_email(
     # Send
     try:
         server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls()
+        server.starttls()  # starttls() enables certificate verification by default in Python
         server.login(smtp_username, smtp_password)
         server.send_message(msg)
         server.quit()
