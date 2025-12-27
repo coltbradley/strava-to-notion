@@ -36,6 +36,11 @@ jobs:
           STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          # Optional: Daily Summary and Athlete Metrics databases
+          NOTION_DAILY_SUMMARY_DATABASE_ID: ${{ secrets.NOTION_DAILY_SUMMARY_DATABASE_ID }}
+          NOTION_ATHLETE_METRICS_DATABASE_ID: ${{ secrets.NOTION_ATHLETE_METRICS_DATABASE_ID }}
+          ATHLETE_NAME: ${{ secrets.ATHLETE_NAME }}
         run: |
           cd strava-notion-sync
           python sync.py

@@ -1,0 +1,54 @@
+name: Weekly Status Report
+
+on:
+  schedule:
+    # Run every Sunday at 8 AM America/New_York (12:00 UTC in winter, 13:00 UTC in summer DST)
+    # Note: GitHub Actions uses UTC, so we use 12:00 UTC (approximate)
+    - cron: '0 12 * * 0'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  weekly-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Generate weekly status report
+        id: generate-report
+        working-directory: strava-notion-sync
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python scripts/weekly_status_report.py
+      
+      - name: Send email report
+        id: send-email
+        working-directory: strava-notion-sync
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          STATUS_EMAIL_FROM: ${{ secrets.STATUS_EMAIL_FROM }}
+          STATUS_EMAIL_TO: ${{ secrets.STATUS_EMAIL_TO }}
+          STATUS_EMAIL_SUBJECT_PREFIX: ${{ secrets.STATUS_EMAIL_SUBJECT_PREFIX || '[Strava→Notion]' }}
+        continue-on-error: true  # Don't fail workflow if email fails
+        run: |
+          python scripts/send_status_email.py || echo "Email sending failed (non-fatal)"
+      
+      - name: Upload weekly status report
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-status-report
+          path: |
+            strava-notion-sync/weekly_status.md
+            strava-notion-sync/weekly_status.json
+          retention-days: 30
+
