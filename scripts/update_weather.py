@@ -295,8 +295,14 @@ def update_activity_weather(
                 else:
                     logger.debug(f"Skipping property '{prop_name}' - not in database schema")
         else:
-            # Schema loading failed - try to write all properties, but handle errors gracefully
-            properties = all_properties
+            # Schema loading failed or returned 0 properties - don't try to write
+            # This prevents 400 errors when properties don't exist
+            logger.warning(
+                f"Schema loading failed or found 0 properties for activity {activity_id}. "
+                "Skipping weather update to avoid property errors. "
+                "Please ensure your Notion database has 'Temperature (°F)' and 'Weather Conditions' properties."
+            )
+            return False
         
         if not properties:
             logger.warning(f"No weather properties to write after schema filtering for activity {activity_id}")
@@ -320,7 +326,11 @@ def update_activity_weather(
             # Handle 400 errors that indicate a missing property
             if status == 400:
                 if "property" in error_msg.lower() and ("doesn't exist" in error_msg.lower() or "not a property" in error_msg.lower()):
-                    logger.debug(f"Property doesn't exist in database for activity {activity_id}: {error_msg}")
+                    logger.warning(
+                        f"Property doesn't exist in database for activity {activity_id}: {error_msg}. "
+                        "Please ensure your Notion database has 'Temperature (°F)' (Number) and "
+                        "'Weather Conditions' (Rich text) properties."
+                    )
                     return False
             # Re-raise other API errors
             raise

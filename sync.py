@@ -1136,13 +1136,49 @@ class NotionSchemaCache:
                 cls._client.databases.retrieve,
                 database_id=database_id,
             )
+            
+            # Debug: log the database response structure
+            if isinstance(db, dict):
+                db_title = db.get("title", [{}])[0].get("plain_text", "Unknown") if db.get("title") else "Unknown"
+                logger.debug(
+                    "Retrieved database '%s' (ID: %s), type: %s, keys in response: %s",
+                    db_title,
+                    database_id[:8],
+                    type(db).__name__,
+                    list(db.keys())[:10],  # First 10 keys for debugging
+                )
+            else:
+                logger.warning(
+                    "Database retrieve returned non-dict type %s for database %s",
+                    type(db).__name__,
+                    database_id[:8],
+                )
+            
             props = db.get("properties", {}) if isinstance(db, dict) else {}
+            
+            # Additional debugging for properties
+            if isinstance(props, dict):
+                logger.debug(
+                    "Extracted properties dict with %d properties: %s",
+                    len(props),
+                    list(props.keys())[:10] if props else "[]",
+                )
+            else:
+                logger.warning(
+                    "Properties is not a dict (type: %s, value: %s) for database %s",
+                    type(props).__name__,
+                    str(props)[:200],
+                    database_id[:8],
+                )
+            
             keys = set(props.keys())
             # If we somehow see zero properties, treat this as a soft failure so we
             # don't silently drop all writes. Better to let Notion validate.
             if not keys:
                 logger.warning(
                     "Loaded Notion database schema but found 0 properties for %s. "
+                    "This usually indicates: (1) Database ID mismatch, (2) Integration lacks access to the database, "
+                    "(3) Database actually has no properties, or (4) API response format changed. "
                     "Schema-based filtering will be disabled; writes will include "
                     "all generated properties and rely on Notion for validation.",
                     database_id[:8],

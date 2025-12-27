@@ -772,6 +772,44 @@ The sync script will automatically retry with longer delays when it encounters r
 - Check that the database is shared with your integration
 - Verify the integration has "Read content" and "Update content" capabilities
 
+#### Schema loading returns 0 properties (weather updates failing)
+
+If you see this warning in logs:
+```
+Loaded Notion database schema but found 0 properties for <database_id>
+```
+
+This usually indicates a Notion-side configuration issue. Common causes:
+
+1. **Database ID mismatch**
+   - Verify `NOTION_DATABASE_ID` matches the database you're trying to sync
+   - Get the ID from the database URL: `https://www.notion.so/YOUR_WORKSPACE/DATABASE_ID?v=...`
+   - The ID is the 32-character hex string before the `?`
+   - Make sure you're using the **database** ID, not a page ID or view ID
+
+2. **Integration lacks database access**
+   - Go to your Notion database → Click "..." menu → "Connections"
+   - Ensure your integration is connected to the database
+   - Check that the integration has "Read content" and "Update content" capabilities
+   - Try disconnecting and reconnecting the integration
+
+3. **Database actually has no properties**
+   - Open the database in Notion and verify it has columns/properties
+   - A database with 0 properties is invalid - add at least the required properties (Name, Activity ID, Date, Sport, etc.)
+
+4. **Using a database view instead of the database**
+   - Make sure you're using the main database URL, not a filtered/view URL
+   - Views don't have their own database ID - they share the parent database ID
+
+5. **Database is a linked database or synced block**
+   - Ensure you're using the original database, not a linked/synced copy
+   - Linked databases may not expose their schema correctly via API
+
+**To diagnose:**
+- Check the debug logs (they'll show the database title and response structure)
+- Try creating a fresh test database with the required properties
+- Verify the integration token is valid (test with a simple API call)
+
 #### Duplicate activities created
 
 **Problem:** Activity ID lookup failed.
