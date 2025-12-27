@@ -44,8 +44,21 @@ This document lists **all** Notion database property names used by the sync scri
 
 ## Optional Weather
 
+**Important:** Weather data is written **ONLY** to the Workouts Database. Weather is not written to Daily Summary or Athlete Metrics databases.
+
 26. `Temperature (°F)` (Number) - **Note:** Includes degree symbol (°) and parentheses
-27. `Weather Conditions` (Rich text) - **Note:** Exact capitalization matters
+   - Contains: Temperature in Fahrenheit (rounded to 1 decimal place)
+   - Example: `72.5`
+
+27. `Weather Conditions` (Rich text) - **Note:** Exact capitalization matters (both words capitalized)
+   - Contains: Concise weather summary string
+   - Format: `"{temp}°F, {conditions}, {wind} mph wind, {humidity}% humidity"`
+   - Example: `"72°F, clear, 5 mph wind, 65% humidity"`
+
+**When weather is written:**
+- Only for outdoor activities (not strength training, indoor cycling, etc.)
+- Only if the activity has location data (`start_latitude`, `start_longitude`)
+- Weather may be unavailable for very recent activities (depends on API delay)
 
 ## Optional Operations / Debugging
 

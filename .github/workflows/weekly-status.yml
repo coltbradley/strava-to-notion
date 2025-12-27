@@ -20,10 +20,18 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
       - name: Generate weekly status report
         id: generate-report
         env:
           GITHUB_SHA: ${{ github.sha }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_DAILY_SUMMARY_DATABASE_ID: ${{ secrets.NOTION_DAILY_SUMMARY_DATABASE_ID }}
+          NOTION_ATHLETE_METRICS_DATABASE_ID: ${{ secrets.NOTION_ATHLETE_METRICS_DATABASE_ID }}
         run: |
           python scripts/weekly_status_report.py
       
