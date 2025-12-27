@@ -359,18 +359,26 @@ These databases are **completely optional** - the main Workouts sync will work p
 - `Load 7d` (Number) - 7-day rolling load total
 - `Load 28d` (Number) - 28-day rolling load total
 - `Load Balance` (Number) - Ratio of 7d / 28d load
-- `Notes` (Text) - Will contain "ETHR intentionally not implemented yet."
+- `Notes` (Text) - Will contain ETHR computation status or results
 
-**ETHR Fields (Optional - Not Implemented Yet):**
-The following fields are **not currently computed** but can exist in your database. They will be left blank:
-- `Estimated Threshold HR (bpm)` (Number)
-- `ETHR Confidence` (Select)
-- `ETHR Sample Count` (Number)
-- `Pace @ ETHR (min/mi)` (Number)
-- `Pace @ ETHR Confidence` (Select)
-- `Pace @ ETHR Sample Count` (Number)
+**ETHR Fields (Optional - Computed from Threshold Efforts):**
+The following fields are computed from qualifying threshold-effort activities:
+- `Estimated Threshold HR (bpm)` (Number) - Average HR from qualifying activities
+- `ETHR Confidence` (Select) - "High" (≥10 samples), "Medium" (≥5 samples), "Low" (≥3 samples)
+- `ETHR Sample Count` (Number) - Number of qualifying activities used
+- `Pace @ ETHR (min/mi)` (Number) - Average pace from qualifying pace-based activities
+- `Pace @ ETHR Confidence` (Select) - Same confidence levels as ETHR Confidence
+- `Pace @ ETHR Sample Count` (Number) - Number of qualifying pace-based activities used
 
-**Note**: ETHR (Estimated Threshold Heart Rate) computation requires careful implementation with confidence guardrails. This is intentionally not implemented yet to avoid providing inaccurate data. The `Notes` field will indicate this.
+**ETHR Qualification Criteria:**
+An activity qualifies as a threshold effort if:
+- Sport type is cardio (Run, Hike, Walk, etc.)
+- Moving time: 20-60 minutes (typical threshold workout length)
+- HR drift < 5% (consistent effort, not fading)
+- HR Data Quality is "Good"
+- Average HR exists
+
+**Note**: ETHR is computed from activities in the sync window (default: last 30 days). More qualifying activities provide higher confidence estimates. The `Notes` field will show the computed values or explain why ETHR wasn't computed (e.g., insufficient qualifying activities).
 
 #### 3. Load Points Formula
 

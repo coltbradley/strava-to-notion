@@ -802,6 +802,127 @@ def aggregate_daily_summaries(
     return daily
 
 
+def compute_ethr_metrics(activities: List[Dict]) -> Dict[str, Any]:
+    """
+    Compute Estimated Threshold HR (ETHR) and Pace @ ETHR from qualifying activities.
+    
+    Qualifying criteria for threshold efforts:
+    - Sport type is cardio (running, cycling, etc.)
+    - Moving time: 20-60 minutes (typical threshold workout length)
+    - HR drift < 5% (consistent effort, not fading)
+    - HR Data Quality is "Good"
+    - Average HR exists
+    - Pace exists (for pace-based sports)
+    
+    Args:
+        activities: List of activity dicts (with computed _drift_metrics, _hr_data_quality, etc.)
+        
+    Returns:
+        Dict with:
+        - ethr_bpm: Average HR from qualifying activities (int, or None)
+        - ethr_confidence: "High", "Medium", "Low", or None
+        - ethr_sample_count: Number of qualifying activities (int)
+        - pace_ethr_min_per_mi: Average pace from qualifying activities (float, or None)
+        - pace_ethr_confidence: "High", "Medium", "Low", or None
+        - pace_ethr_sample_count: Number of qualifying activities with pace (int)
+    """
+    ETHR_MIN_MOVING_TIME_MINUTES = 20
+    ETHR_MAX_MOVING_TIME_MINUTES = 60
+    ETHR_MAX_DRIFT_PCT = 5.0  # HR drift must be < 5% for threshold effort
+    
+    qualifying_hrs: List[float] = []
+    qualifying_paces: List[float] = []  # For pace-based sports
+    
+    for activity in activities:
+        sport_type = activity.get("type", "")
+        
+        # Must be a cardio sport
+        if sport_type not in CARDIO_SPORTS:
+            continue
+        
+        # HR Data Quality must be "Good"
+        hr_data_quality = activity.get("_hr_data_quality", "None")
+        if hr_data_quality != "Good":
+            continue
+        
+        # Must have average HR
+        avg_hr = activity.get("average_heartrate")
+        if not avg_hr or avg_hr <= 0:
+            continue
+        
+        # Moving time must be in threshold range (20-60 minutes)
+        moving_time_s = activity.get("moving_time", 0)
+        moving_time_min = moving_time_s / SECONDS_PER_MINUTE
+        if moving_time_min < ETHR_MIN_MOVING_TIME_MINUTES or moving_time_min > ETHR_MAX_MOVING_TIME_MINUTES:
+            continue
+        
+        # HR drift must be < 5% (consistent effort, not fading)
+        drift_metrics = activity.get("_drift_metrics")
+        drift_pct = None
+        if drift_metrics:
+            drift_pct = drift_metrics.get("drift_pct")
+        
+        # If drift was computed and it's > 5%, skip (effort was not consistent/threshold)
+        if drift_pct is not None and drift_pct > ETHR_MAX_DRIFT_PCT:
+            continue
+        
+        # If drift was not computed, that's okay - might not have met drift eligibility criteria
+        # but could still be a threshold effort if other criteria are met
+        
+        # This activity qualifies - add its HR
+        qualifying_hrs.append(float(avg_hr))
+        
+        # For pace-based sports, also collect pace if available
+        if sport_type in PACE_SPORTS:
+            distance_m = activity.get("distance", 0)
+            distance_mi = distance_m * METERS_TO_MILES
+            if distance_mi > 0 and moving_time_s > 0:
+                pace_sec_per_mi = moving_time_s / distance_mi
+                pace_min_per_mi = pace_sec_per_mi / SECONDS_PER_MINUTE
+                qualifying_paces.append(pace_min_per_mi)
+    
+    # Compute ETHR (average HR from qualifying activities)
+    ethr_bpm = None
+    ethr_confidence = None
+    ethr_sample_count = len(qualifying_hrs)
+    
+    if ethr_sample_count >= 10:
+        ethr_bpm = round(sum(qualifying_hrs) / ethr_sample_count)
+        ethr_confidence = "High"
+    elif ethr_sample_count >= 5:
+        ethr_bpm = round(sum(qualifying_hrs) / ethr_sample_count)
+        ethr_confidence = "Medium"
+    elif ethr_sample_count >= 3:
+        ethr_bpm = round(sum(qualifying_hrs) / ethr_sample_count)
+        ethr_confidence = "Low"
+    # else: ethr_bpm and ethr_confidence remain None (insufficient data)
+    
+    # Compute Pace @ ETHR (average pace from qualifying pace-based activities)
+    pace_ethr_min_per_mi = None
+    pace_ethr_confidence = None
+    pace_ethr_sample_count = len(qualifying_paces)
+    
+    if pace_ethr_sample_count >= 10:
+        pace_ethr_min_per_mi = round(sum(qualifying_paces) / pace_ethr_sample_count, 2)
+        pace_ethr_confidence = "High"
+    elif pace_ethr_sample_count >= 5:
+        pace_ethr_min_per_mi = round(sum(qualifying_paces) / pace_ethr_sample_count, 2)
+        pace_ethr_confidence = "Medium"
+    elif pace_ethr_sample_count >= 3:
+        pace_ethr_min_per_mi = round(sum(qualifying_paces) / pace_ethr_sample_count, 2)
+        pace_ethr_confidence = "Low"
+    # else: pace_ethr_min_per_mi and pace_ethr_confidence remain None (insufficient data)
+    
+    return {
+        "ethr_bpm": ethr_bpm,
+        "ethr_confidence": ethr_confidence,
+        "ethr_sample_count": ethr_sample_count,
+        "pace_ethr_min_per_mi": pace_ethr_min_per_mi,
+        "pace_ethr_confidence": pace_ethr_confidence,
+        "pace_ethr_sample_count": pace_ethr_sample_count,
+    }
+
+
 def compute_rolling_loads(
     daily_summaries: Dict[str, Dict[str, Any]], today: datetime
 ) -> Dict[str, Optional[float]]:
@@ -1791,8 +1912,39 @@ class NotionClient:
                 "number": metrics["load_balance"]
             }
         
-        # ETHR fields: leave blank with note that it's not implemented
-        notes = "ETHR intentionally not implemented yet."
+        # ETHR fields: compute if metrics provided
+        if metrics.get("ethr_bpm") is not None:
+            properties[ATHLETE_METRICS_SCHEMA["ethr_bpm"]] = {
+                "number": metrics["ethr_bpm"]
+            }
+        if metrics.get("ethr_confidence"):
+            properties[ATHLETE_METRICS_SCHEMA["ethr_confidence"]] = {
+                "select": {"name": metrics["ethr_confidence"]}
+            }
+        if metrics.get("ethr_sample_count") is not None:
+            properties[ATHLETE_METRICS_SCHEMA["ethr_sample_count"]] = {
+                "number": metrics["ethr_sample_count"]
+            }
+        if metrics.get("pace_ethr_min_per_mi") is not None:
+            properties[ATHLETE_METRICS_SCHEMA["pace_ethr_min_per_mi"]] = {
+                "number": metrics["pace_ethr_min_per_mi"]
+            }
+        if metrics.get("pace_ethr_confidence"):
+            properties[ATHLETE_METRICS_SCHEMA["pace_ethr_confidence"]] = {
+                "select": {"name": metrics["pace_ethr_confidence"]}
+            }
+        if metrics.get("pace_ethr_sample_count") is not None:
+            properties[ATHLETE_METRICS_SCHEMA["pace_ethr_sample_count"]] = {
+                "number": metrics["pace_ethr_sample_count"]
+            }
+        
+        # Notes field: update based on whether ETHR was computed
+        if metrics.get("ethr_bpm") is not None:
+            notes = f"ETHR: {metrics['ethr_bpm']} bpm (confidence: {metrics.get('ethr_confidence', 'N/A')}, samples: {metrics.get('ethr_sample_count', 0)})"
+            if metrics.get("pace_ethr_min_per_mi"):
+                notes += f". Pace @ ETHR: {metrics['pace_ethr_min_per_mi']} min/mi"
+        else:
+            notes = "ETHR computation requires at least 3 qualifying threshold-effort activities (20-60 min, HR drift <5%, Good HR quality)."
         properties[ATHLETE_METRICS_SCHEMA["notes"]] = {
             "rich_text": [{"text": {"content": notes}}]
         }
@@ -2226,6 +2378,9 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
             
             rolling_loads = compute_rolling_loads(daily_summaries, today)
             
+            # Compute ETHR metrics from activities
+            ethr_metrics = compute_ethr_metrics(activities)
+            
             # Compute load balance (7d / 28d)
             # Per spec: if Load_28d == 0 or missing, set Load_Balance to None (don't divide by zero)
             load_balance = None
@@ -2242,6 +2397,9 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                 "load_28d": load_28d_val if load_28d_val > 0 else None,
                 "load_balance": load_balance,
             }
+            
+            # Add ETHR metrics
+            metrics.update(ethr_metrics)
             
             success = athlete_metrics_client.upsert_athlete_metrics(athlete_name, metrics)
             if success:
