@@ -12,8 +12,10 @@ Usage:
     python scripts/update_weather.py [--days N] [--dry-run]
 
 Options:
-    --days N: Only update activities from the last N days (default: all activities)
+    --days N: Only update activities from the last N days (default: all activities, but still limited to 3 most recent)
     --dry-run: Show what would be updated without actually updating Notion
+
+Note: By default, this script only processes the 3 most recent activities to avoid excessive API calls.
 """
 
 import argparse
@@ -48,9 +50,10 @@ def get_all_activities(
     notion_token: str,
     workouts_db_id: str,
     max_days: Optional[int] = None,
+    max_activities: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Get all activities from Notion database, optionally filtered by date.
+    Get activities from Notion database, optionally filtered by date and limited by count.
     
     Returns list of activity page dicts with properties.
     """
@@ -68,9 +71,12 @@ def get_all_activities(
             }
         }
     
-    logger.info(f"Fetching activities from Notion (max_days={max_days or 'all'})...")
+    logger.info(f"Fetching activities from Notion (max_days={max_days or 'all'}, max_activities={max_activities or 'all'})...")
     
     while True:
+        # Stop if we've reached the max_activities limit
+        if max_activities and len(activities) >= max_activities:
+            break
         query_params: Dict[str, Any] = {
             "sorts": [
                 {
@@ -95,6 +101,9 @@ def get_all_activities(
             
             for page in response.get("results", []):
                 activities.append(page)
+                # Stop if we've reached the max_activities limit
+                if max_activities and len(activities) >= max_activities:
+                    break
             
             if not response.get("has_more"):
                 break
@@ -104,6 +113,10 @@ def get_all_activities(
         except Exception as e:
             logger.error(f"Error querying Notion database: {e}")
             break
+    
+    # Truncate to max_activities if we exceeded it (safety check)
+    if max_activities and len(activities) > max_activities:
+        activities = activities[:max_activities]
     
     logger.info(f"Found {len(activities)} activities in Notion")
     return activities
@@ -325,13 +338,13 @@ def update_activity_weather(
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Update weather data for all past activities in Notion"
+        description="Update weather data for the 3 most recent activities in Notion"
     )
     parser.add_argument(
         "--days",
         type=int,
         default=None,
-        help="Only update activities from the last N days (default: all activities)",
+        help="Only update activities from the last N days (default: all activities, but still limited to 3 most recent)",
     )
     parser.add_argument(
         "--dry-run",
@@ -360,8 +373,8 @@ def main():
         print("Error: Strava credentials not set (STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_REFRESH_TOKEN)", file=sys.stderr)
         sys.exit(1)
     
-    # Get all activities
-    activities = get_all_activities(notion_token, workouts_db_id, max_days=args.days)
+    # Get activities (limit to 3 most recent)
+    activities = get_all_activities(notion_token, workouts_db_id, max_days=args.days, max_activities=3)
     
     if not activities:
         logger.info("No activities found")
