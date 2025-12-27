@@ -53,17 +53,9 @@ def _database_query_fallback(
     Query Notion database with fallback for SDK versions that don't expose databases.query.
     
     This is a standalone version of the _database_query method from NotionClient.
+    Always uses HTTP fallback since SDK query method is unreliable across versions.
     """
-    client = Client(auth=notion_token)
-    
-    # Preferred path: databases.query exists on the SDK endpoint
-    if hasattr(client.databases, "query"):
-        return getattr(client.databases, "query")(
-            database_id=database_id,
-            **query_params
-        )
-    
-    # Fallback path for older SDKs: call REST API directly
+    # Always use HTTP fallback (SDK query method is not reliable across versions)
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     headers = {
         "Authorization": f"Bearer {notion_token}",
