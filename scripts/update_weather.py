@@ -39,36 +39,9 @@ from sync import (
     WeatherClient,
     NotionClient,
     INDOOR_SPORTS,
-    http_request_with_retries,
+    _notion_database_query_http,
     logger,
 )
-
-
-def _database_query_fallback(
-    notion_token: str,
-    database_id: str,
-    **query_params: Any
-) -> Dict:
-    """
-    Query Notion database with fallback for SDK versions that don't expose databases.query.
-    
-    This is a standalone version of the _database_query method from NotionClient.
-    Always uses HTTP fallback since SDK query method is unreliable across versions.
-    """
-    # Always use HTTP fallback (SDK query method is not reliable across versions)
-    url = f"https://api.notion.com/v1/databases/{database_id}/query"
-    headers = {
-        "Authorization": f"Bearer {notion_token}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-    }
-    response = http_request_with_retries(
-        "POST",
-        url,
-        headers=headers,
-        json=query_params,
-    )
-    return response.json()
 
 
 def get_all_activities(
@@ -114,7 +87,7 @@ def get_all_activities(
             query_params["start_cursor"] = start_cursor
         
         try:
-            response = _database_query_fallback(
+            response = _notion_database_query_http(
                 notion_token,
                 workouts_db_id,
                 **query_params

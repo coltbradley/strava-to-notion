@@ -12,6 +12,7 @@ import json
 import logging
 import random
 import hashlib
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Callable, Any
 from pathlib import Path
@@ -268,6 +269,36 @@ def http_request_with_retries(
     if last_exc:
         raise last_exc
     raise RuntimeError(f"Unknown error making request to {url}")
+
+
+def _notion_database_query_http(notion_token: str, database_id: str, **query_params: Any) -> Dict:
+    """
+    Shared utility for querying Notion databases via HTTP (fallback for SDK compatibility).
+    
+    This function is used both by NotionClient and scripts that need to query Notion databases
+    directly. It always uses HTTP POST to ensure compatibility across different SDK versions.
+    
+    Args:
+        notion_token: Notion API token
+        database_id: Notion database ID
+        **query_params: Additional query parameters (filter, sorts, start_cursor, etc.)
+    
+    Returns:
+        Dict containing the API response (with 'results' key)
+    """
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {notion_token}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    response = http_request_with_retries(
+        "POST",
+        url,
+        headers=headers,
+        json=query_params,
+    )
+    return response.json()
 
 
 class StravaClient:
@@ -836,25 +867,25 @@ class WeatherClient:
             response = http_request_with_retries("GET", self.weatherapi_base, params=params)
             logger.debug(f"WeatherAPI.com response status: {response.status_code}")
             data = response.json()
-            logger.debug(f"STEP: WeatherAPI.com response keys: {list(data.keys())}")
+            logger.debug(f"WeatherAPI.com response keys: {list(data.keys())}")
             
             # Check for API errors
             if "error" in data:
                 error_msg = data.get("error", {}).get("message", "Unknown error")
-                logger.warning(f"STEP: WeatherAPI.com API error: {error_msg}")
+                logger.warning(f"WeatherAPI.com API error: {error_msg}")
                 return None
             
             # Get forecastday (should be one day)
             forecastday = data.get("forecast", {}).get("forecastday", [])
             if not forecastday:
-                logger.warning(f"STEP: No forecastday data in WeatherAPI.com response")
+                logger.warning(f"No forecastday data in WeatherAPI.com response")
                 return None
             
             day_data = forecastday[0]
             hours = day_data.get("hour", [])
             
             if not hours:
-                logger.warning(f"STEP: No hourly data in WeatherAPI.com response")
+                logger.warning(f"No hourly data in WeatherAPI.com response")
                 return None
             
             # Find the hour that matches the activity start time
@@ -887,7 +918,7 @@ class WeatherClient:
                         continue
             
             if not matching_hour:
-                logger.warning(f"STEP: Could not find matching hour {hour} in WeatherAPI.com data")
+                logger.warning(f"Could not find matching hour {hour} in WeatherAPI.com data")
                 return None
             
             temp_f = matching_hour.get("temp_f")
@@ -896,7 +927,7 @@ class WeatherClient:
             humidity = matching_hour.get("humidity", 0.0)
             
             if temp_f is None:
-                logger.warning(f"STEP: Missing temperature in WeatherAPI.com response")
+                logger.warning(f"Missing temperature in WeatherAPI.com response")
                 return None
             
             result = {
@@ -909,9 +940,8 @@ class WeatherClient:
             return result
             
         except Exception as e:
-            logger.warning(f"STEP: Exception in WeatherAPI.com fetch for ({latitude}, {longitude}) at {start_time}: {e}")
-            import traceback
-            logger.debug(f"STEP: Full traceback: {traceback.format_exc()}")
+            logger.warning(f"Exception in WeatherAPI.com fetch for ({latitude}, {longitude}) at {start_time}: {e}")
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
             return None
     
     def _get_weather_openmeteo(
@@ -935,49 +965,49 @@ class WeatherClient:
             response = http_request_with_retries("GET", self.openmeteo_base, params=params)
             logger.debug(f"Open-Meteo API response status: {response.status_code}")
             data = response.json()
-            logger.debug(f"STEP: Open-Meteo API response keys: {list(data.keys())}")
+            logger.debug(f"Open-Meteo API response keys: {list(data.keys())}")
             
             # Check for API errors
             if "error" in data or "reason" in data:
                 error_msg = data.get('reason', data.get('error', 'Unknown error'))
-                logger.warning(f"STEP: Open-Meteo API error: {error_msg}")
-                logger.warning(f"STEP: Full error response: {data}")
+                logger.warning(f"Open-Meteo API error: {error_msg}")
+                logger.warning(f"Full error response: {data}")
                 return None
             
             hourly = data.get("hourly", {})
-            logger.debug(f"STEP: Hourly data keys: {list(hourly.keys()) if hourly else 'None'}")
+            logger.debug(f"Hourly data keys: {list(hourly.keys()) if hourly else 'None'}")
             temps = hourly.get("temperature_2m", [])
             weathercodes = hourly.get("weathercode", [])
             windspeeds = hourly.get("windspeed_10m", [])
             humidities = hourly.get("relativehumidity_2m", [])
             
-            logger.debug(f"STEP: Extracted arrays - temps: {len(temps) if temps else 0}, codes: {len(weathercodes) if weathercodes else 0}, winds: {len(windspeeds) if windspeeds else 0}, humidity: {len(humidities) if humidities else 0}")
+            logger.debug(f"Extracted arrays - temps: {len(temps) if temps else 0}, codes: {len(weathercodes) if weathercodes else 0}, winds: {len(windspeeds) if windspeeds else 0}, humidity: {len(humidities) if humidities else 0}")
             
             if not temps or not weathercodes:
-                logger.warning(f"STEP: No weather data available for {date_str} at ({latitude}, {longitude}) - temps: {len(temps) if temps else 0}, codes: {len(weathercodes) if weathercodes else 0}")
+                logger.warning(f"No weather data available for {date_str} at ({latitude}, {longitude}) - temps: {len(temps) if temps else 0}, codes: {len(weathercodes) if weathercodes else 0}")
                 return None
             
             # Find the hour that matches the activity start time
             activity_hour = start_time.hour
-            logger.debug(f"STEP: Activity hour: {activity_hour}, available hours: {len(temps)}")
+            logger.debug(f"Activity hour: {activity_hour}, available hours: {len(temps)}")
             if activity_hour >= len(temps):
                 activity_hour = len(temps) - 1
-                logger.debug(f"STEP: Adjusted activity hour to last available: {activity_hour}")
+                logger.debug(f"Adjusted activity hour to last available: {activity_hour}")
             
             temp_f = temps[activity_hour] if activity_hour < len(temps) else None
             weathercode = weathercodes[activity_hour] if activity_hour < len(weathercodes) else None
             wind_mph = windspeeds[activity_hour] if activity_hour < len(windspeeds) else None
             humidity = humidities[activity_hour] if activity_hour < len(humidities) else None
             
-            logger.debug(f"STEP: Extracted values for hour {activity_hour} - temp_f: {temp_f}, weathercode: {weathercode}, wind_mph: {wind_mph}, humidity: {humidity}")
+            logger.debug(f"Extracted values for hour {activity_hour} - temp_f: {temp_f}, weathercode: {weathercode}, wind_mph: {wind_mph}, humidity: {humidity}")
             
             if temp_f is None or weathercode is None:
-                logger.warning(f"STEP: Missing required weather data - temp_f: {temp_f}, weathercode: {weathercode}")
+                logger.warning(f"Missing required weather data - temp_f: {temp_f}, weathercode: {weathercode}")
                 return None
             
             # Convert WMO weather code to human-readable conditions
             conditions = self._weathercode_to_text(weathercode)
-            logger.debug(f"STEP: Converted weathercode {weathercode} to conditions: {conditions}")
+            logger.debug(f"Converted weathercode {weathercode} to conditions: {conditions}")
             
             result = {
                 "temp_f": temp_f,
@@ -989,9 +1019,8 @@ class WeatherClient:
             return result
             
         except Exception as e:
-            logger.warning(f"STEP: Exception in Open-Meteo fetch for ({latitude}, {longitude}) at {start_time}: {e}")
-            import traceback
-            logger.debug(f"STEP: Full traceback: {traceback.format_exc()}")
+            logger.warning(f"Exception in Open-Meteo fetch for ({latitude}, {longitude}) at {start_time}: {e}")
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
             return None
     
     @staticmethod
@@ -1192,31 +1221,16 @@ class NotionClient:
         """
         Wrapper around Notion database query that works across SDK versions.
 
-        Prefers the official databases.query method; if unavailable, falls back
-        to a raw HTTP request to /databases/{id}/query.
+        Uses HTTP fallback for consistency across SDK versions.
         """
-        # Preferred path: databases.query exists on the SDK endpoint
-        if hasattr(self.client.databases, "query"):
-            return self._notion_call_with_retries(
-                getattr(self.client.databases, "query"),
-                **query_params,
-            )
-
-        # Fallback path for older SDKs: call REST API directly
-        database_id = query_params.pop("database_id")
-        url = f"https://api.notion.com/v1/databases/{database_id}/query"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "Notion-Version": "2022-06-28",
-        }
-        response = http_request_with_retries(
-            "POST",
-            url,
-            headers=headers,
-            json=query_params,
-        )
-        return response.json()
+        database_id = query_params.get("database_id")
+        if not database_id:
+            raise ValueError("database_id is required in query_params")
+        
+        # Always use HTTP fallback for consistency (SDK query method is unreliable across versions)
+        # Extract database_id from params for URL construction
+        query_params_for_request = {k: v for k, v in query_params.items() if k != "database_id"}
+        return _notion_database_query_http(self.api_key, database_id, **query_params_for_request)
     
     def get_existing_activity_pages(self, days: int = DEFAULT_SYNC_DAYS) -> Dict[str, str]:
         """
@@ -1401,8 +1415,7 @@ class NotionClient:
         
         # Pace calculation (for running-like sports)
         pace_min_per_mi = None
-        running_sports = {"Run", "TrailRun", "Walk", "Hike"}
-        if sport_type in running_sports and distance_mi > 0 and moving_time_s > 0:
+        if sport_type in PACE_SPORTS and distance_mi > 0 and moving_time_s > 0:
             seconds_per_mile = moving_time_s / distance_mi
             pace_min_per_mi = seconds_per_mile / SECONDS_PER_MINUTE
         
@@ -1959,7 +1972,6 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                         logger.warning(f"No weather data returned for activity {activity_id} (may be too recent or API error)")
                 except Exception as e:
                     logger.warning(f"Error fetching weather for activity {activity_id}: {e}")
-                    import traceback
                     logger.debug(f"Weather fetch traceback: {traceback.format_exc()}")
         
         # Upsert activity
