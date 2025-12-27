@@ -152,7 +152,8 @@ def verify_database_access(
         return results
     
     try:
-        client = Client(auth=notion_token)
+        # Pin to legacy API version (2022-06-28) for consistent response format
+        client = Client(auth=notion_token, notion_version="2022-06-28")
     except Exception as e:
         results["workouts"]["error"] = f"Failed to initialize Notion client: {e}"
         return results
@@ -209,7 +210,8 @@ def get_last_activity_weather(
         return None
     
     try:
-        client = Client(auth=notion_token)
+        # Pin to legacy API version (2022-06-28) for consistent response format
+        client = Client(auth=notion_token, notion_version="2022-06-28")
         
         # Import schema constants for property names
         from sync import NOTION_SCHEMA

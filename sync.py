@@ -1109,7 +1109,9 @@ class NotionSchemaCache:
     def initialize(cls, api_key: str) -> None:
         """Initialize the cache with an API key and client."""
         cls._api_key = api_key
-        cls._client = Client(auth=api_key)
+        # Pin to legacy API version (2022-06-28) for consistent response format
+        # Newer versions (2025+) return properties inside data_sources array
+        cls._client = Client(auth=api_key, notion_version="2022-06-28")
     
     @classmethod
     def get_schema(cls, api_key: str, database_id: str) -> Optional[set[str]]:
@@ -1277,7 +1279,9 @@ class NotionClient:
     """Client for interacting with Notion API with upsert support."""
     
     def __init__(self, api_key: str, database_id: str):
-        self.client = Client(auth=api_key)
+        # Pin to legacy API version (2022-06-28) for consistent response format
+        # Newer versions (2025+) return properties inside data_sources array
+        self.client = Client(auth=api_key, notion_version="2022-06-28")
         # Keep a copy of the raw API key for low-level HTTP fallbacks
         self.api_key = api_key
         self.database_id = database_id
