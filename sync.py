@@ -1492,23 +1492,17 @@ class NotionClient:
 
         # Weather data (optional, only for outdoor activities)
         weather = activity.get("_weather")
-        logger.debug(f"Converting weather to properties - weather data: {weather}")
         if weather:
             temp_f = weather.get("temp_f")
-            logger.debug(f"Weather temp_f value: {temp_f}")
             if temp_f is not None:
                 properties[NOTION_SCHEMA["temperature_f"]] = {"number": round(temp_f, 1)}
-                logger.debug(f"Added temperature property: {properties.get(NOTION_SCHEMA['temperature_f'])}")
             
             weather_summary = WeatherClient.make_weather_summary(weather)
-            logger.debug(f"Generated weather summary: {weather_summary}")
             if weather_summary:
                 properties[NOTION_SCHEMA["weather_conditions"]] = {
                     "rich_text": [{"text": {"content": weather_summary}}]
                 }
-                logger.debug(f"Added weather conditions property: {properties.get(NOTION_SCHEMA['weather_conditions'])}")
-        else:
-            logger.debug("No weather data in activity, skipping weather properties")
+        # Note: We don't log when weather is missing - it's optional and expected for indoor activities
 
         return properties
     
@@ -1912,15 +1906,17 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                 try:
                     # Parse start_date to get datetime for weather lookup
                     start_date = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
-                    logger.debug(f"Fetching weather for activity {activity_id} at ({start_lat}, {start_lng}) on {start_date.date()}")
+                    logger.info(f"Fetching weather for activity {activity_id} at ({start_lat}, {start_lng}) on {start_date.date()}")
                     weather = weather_client.get_weather_for_activity(start_lat, start_lng, start_date)
                     if weather:
                         activity["_weather"] = weather
-                        logger.debug(f"Weather fetched for activity {activity_id}: {WeatherClient.make_weather_summary(weather)}")
+                        logger.info(f"Weather fetched for activity {activity_id}: {WeatherClient.make_weather_summary(weather)}")
                     else:
-                        logger.debug(f"No weather data returned for activity {activity_id}")
+                        logger.warning(f"No weather data returned for activity {activity_id} (may be too recent or API error)")
                 except Exception as e:
                     logger.warning(f"Error fetching weather for activity {activity_id}: {e}")
+                    import traceback
+                    logger.debug(f"Weather fetch traceback: {traceback.format_exc()}")
                     import traceback
                     logger.debug(traceback.format_exc())
         
