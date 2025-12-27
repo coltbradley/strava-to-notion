@@ -16,6 +16,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Callable, Any
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from notion_client import Client
@@ -157,10 +158,11 @@ DAILY_SUMMARY_SCHEMA = {
 # Athlete Metrics database schema (optional)
 ATHLETE_METRICS_SCHEMA = {
     "name": "Name",
-    "updated_at": "Updated At",
+    "date": "Date",  # Date of the metrics snapshot (unique key with Name)
     "load_7d": "Load 7d",
     "load_28d": "Load 28d",
     "load_balance": "Load Balance",
+    "strain_volatility_7d": "Strain Volatility 7d",
     "ethr_bpm": "Estimated Threshold HR (bpm)",
     "ethr_confidence": "ETHR Confidence",
     "ethr_sample_count": "ETHR Sample Count",
@@ -667,33 +669,43 @@ class StravaClient:
         }
 
 
+# Timezone for daily date bucketing (matches weekly report scheduling)
+DAILY_BUCKET_TIMEZONE = ZoneInfo("America/New_York")
+
 def get_activity_local_date(activity: Dict) -> str:
     """
-    Extract local date from activity as YYYY-MM-DD string.
+    Extract local date from activity as YYYY-MM-DD string in America/New_York timezone.
     
-    Uses start_date_local if available, otherwise falls back to start_date (UTC).
+    Uses start_date_local if available, otherwise converts start_date (UTC) to America/New_York.
     
     Args:
         activity: Strava activity dict
         
     Returns:
-        Date string in YYYY-MM-DD format
+        Date string in YYYY-MM-DD format (America/New_York timezone)
     """
-    # Prefer local date if available
+    # Prefer local date if available (Strava's local timezone)
     start_date_local = activity.get("start_date_local")
     if start_date_local:
-        # Parse ISO format datetime and extract date
+        # Parse ISO format datetime and convert to America/New_York timezone
         dt = datetime.fromisoformat(start_date_local.replace("Z", "+00:00"))
-        return dt.date().isoformat()
+        # If it's naive, assume UTC; if timezone-aware, convert
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ny = dt.astimezone(DAILY_BUCKET_TIMEZONE)
+        return dt_ny.date().isoformat()
     
-    # Fallback to UTC start_date
+    # Fallback to UTC start_date, convert to America/New_York
     start_date = activity.get("start_date", "")
     if start_date:
         dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
-        return dt.date().isoformat()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ny = dt.astimezone(DAILY_BUCKET_TIMEZONE)
+        return dt_ny.date().isoformat()
     
-    # Should not happen, but return today as fallback
-    return datetime.now(timezone.utc).date().isoformat()
+    # Should not happen, but return today in America/New_York as fallback
+    return datetime.now(DAILY_BUCKET_TIMEZONE).date().isoformat()
 
 
 def compute_zone_weighted_load_points(zone_minutes: Dict[int, float]) -> Optional[float]:
@@ -720,14 +732,15 @@ def compute_zone_weighted_load_points(zone_minutes: Dict[int, float]) -> Optiona
 
 
 def aggregate_daily_summaries(
-    activities: List[Dict], days: int
+    activities: List[Dict], start_date: datetime.date, end_date: datetime.date
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Aggregate activities by local date into daily summaries.
+    Aggregate activities by local date into daily summaries for all days in the range.
     
     Args:
         activities: List of activity dicts (with computed _load_pts and _hr_data_quality)
-        days: Number of days in the sync window (for context)
+        start_date: Start date (inclusive, America/New_York timezone date)
+        end_date: End date (inclusive, America/New_York timezone date)
         
     Returns:
         Dict mapping date_iso (YYYY-MM-DD) to summary dict with:
@@ -736,28 +749,38 @@ def aggregate_daily_summaries(
         - total_distance_mi
         - total_elevation_ft
         - session_count
-        - total_load_pts
+        - total_load_pts (always 0 or positive, never None)
         - eligible_cardio_count (count of cardio workouts on this day)
         - load_workouts_count (count of cardio workouts with load computed)
+        
+    Note: Returns entries for ALL days in [start_date, end_date], including rest days (session_count=0).
     """
+    # Initialize all days in range with zero values
     daily: Dict[str, Dict[str, Any]] = {}
+    current_date = start_date
+    while current_date <= end_date:
+        date_iso = current_date.isoformat()
+        daily[date_iso] = {
+            "total_duration_min": 0.0,
+            "total_moving_time_min": 0.0,
+            "total_distance_mi": 0.0,
+            "total_elevation_ft": 0.0,
+            "session_count": 0,
+            "total_load_pts": 0.0,
+            "eligible_cardio_count": 0,
+            "load_workouts_count": 0,
+        }
+        current_date += timedelta(days=1)
     
+    # Aggregate activities into their respective days
     for activity in activities:
         date_iso = get_activity_local_date(activity)
-        sport_type = activity.get("type", "")
         
+        # Only process activities that fall within our date range
         if date_iso not in daily:
-            daily[date_iso] = {
-                "total_duration_min": 0.0,
-                "total_moving_time_min": 0.0,
-                "total_distance_mi": 0.0,
-                "total_elevation_ft": 0.0,
-                "session_count": 0,
-                "total_load_pts": 0.0,
-                "eligible_cardio_count": 0,
-                "load_workouts_count": 0,
-            }
+            continue
         
+        sport_type = activity.get("type", "")
         day_summary = daily[date_iso]
         day_summary["session_count"] += 1
         
@@ -923,6 +946,101 @@ def compute_ethr_metrics(activities: List[Dict]) -> Dict[str, Any]:
     }
 
 
+def compute_strain_volatility_7d(
+    daily_summary_client: "NotionClient",
+    today_date: datetime.date,
+) -> Optional[float]:
+    """
+    Compute Strain Volatility 7d (coefficient of variation) from Daily Summary database.
+    
+    Queries Daily Summary DB for last 7 days (D-6 through D) and computes CV of daily load.
+    
+    Args:
+        daily_summary_client: NotionClient instance for Daily Summary database
+        today_date: Today's date in America/New_York timezone
+        
+    Returns:
+        Coefficient of variation (CV) as float, rounded to 2 decimals, or None if mean == 0
+    """
+    # Calculate date range: last 7 days (D-6 through D, inclusive)
+    start_date = today_date - timedelta(days=6)
+    end_date = today_date
+    
+    # Query Daily Summary for last 7 days
+    loads: List[float] = []
+    try:
+        # Query all rows in date range
+        response = daily_summary_client._database_query(
+            database_id=daily_summary_client.database_id,
+            filter={
+                "and": [
+                    {
+                        "property": DAILY_SUMMARY_SCHEMA["date"],
+                        "date": {"on_or_after": start_date.isoformat()},
+                    },
+                    {
+                        "property": DAILY_SUMMARY_SCHEMA["date"],
+                        "date": {"on_or_before": end_date.isoformat()},
+                    },
+                ]
+            },
+            sorts=[
+                {
+                    "property": DAILY_SUMMARY_SCHEMA["date"],
+                    "direction": "ascending",
+                }
+            ],
+        )
+        
+        # Build a map of date -> load
+        date_to_load: Dict[str, float] = {}
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            date_prop = props.get(DAILY_SUMMARY_SCHEMA["date"])
+            if date_prop and date_prop.get("date"):
+                page_date = date_prop["date"].get("start", "")
+                if page_date:
+                    # Extract date part (YYYY-MM-DD) if datetime
+                    if "T" in page_date:
+                        page_date = page_date.split("T")[0]
+                    
+                    load_prop = props.get(DAILY_SUMMARY_SCHEMA["load_pts"])
+                    load_val = 0.0
+                    if load_prop and load_prop.get("number") is not None:
+                        load_val = float(load_prop["number"]) or 0.0
+                    date_to_load[page_date] = load_val
+        
+        # Build loads array for last 7 days (fill missing days with 0.0)
+        current = start_date
+        while current <= end_date:
+            date_iso = current.isoformat()
+            load_val = date_to_load.get(date_iso, 0.0)  # Default to 0 if missing
+            loads.append(load_val)
+            current += timedelta(days=1)
+    
+    except Exception as e:
+        logger.warning(f"Error querying Daily Summary for strain volatility: {e}")
+        # Return None if we can't query (fail-safe)
+        return None
+    
+    # Compute coefficient of variation
+    if len(loads) == 0:
+        return None
+    
+    mean = sum(loads) / len(loads)
+    
+    # If mean is 0, return None (no meaningful volatility)
+    if mean == 0:
+        return None
+    
+    # Compute population standard deviation (ddof=0)
+    variance = sum((x - mean) ** 2 for x in loads) / len(loads)
+    std = variance ** 0.5
+    
+    cv = std / mean
+    return round(cv, 2)
+
+
 def compute_rolling_loads(
     daily_summaries: Dict[str, Dict[str, Any]], today: datetime
 ) -> Dict[str, Optional[float]]:
@@ -931,12 +1049,15 @@ def compute_rolling_loads(
     
     Args:
         daily_summaries: Dict mapping date_iso (YYYY-MM-DD) to daily summary (with total_load_pts)
-        today: Current datetime (used to get today's date for rolling window)
+        today: Current datetime in America/New_York timezone (used to get today's date for rolling window)
         
     Returns:
         Dict with "load_7d" and "load_28d" keys (always returns numbers, never None for simplicity)
         Note: Empty daily_summaries will return 0.0 for both
     """
+    # Ensure today is in America/New_York timezone
+    if today.tzinfo != DAILY_BUCKET_TIMEZONE:
+        today = today.astimezone(DAILY_BUCKET_TIMEZONE)
     today_date = today.date()
     
     load_7d = 0.0
@@ -1850,11 +1971,30 @@ class NotionClient:
                 },
             )
             existing_page_id = None
+            existing_notes = None
+            
             if response.get("results"):
-                existing_page_id = response["results"][0]["id"]
+                existing_page = response["results"][0]
+                existing_page_id = existing_page["id"]
+                
+                # Preserve existing Notes field (user-owned, don't overwrite)
+                if allowed_properties and DAILY_SUMMARY_SCHEMA["notes"] in allowed_properties:
+                    existing_props = existing_page.get("properties", {})
+                    notes_prop = existing_props.get(DAILY_SUMMARY_SCHEMA["notes"])
+                    if notes_prop and notes_prop.get("rich_text"):
+                        # Extract existing notes text
+                        rich_text = notes_prop["rich_text"]
+                        if rich_text and len(rich_text) > 0:
+                            existing_notes = rich_text[0].get("text", {}).get("content", "")
             
             if existing_page_id:
-                # Update existing page
+                # Update existing page - preserve Notes if it exists
+                if existing_notes is not None and allowed_properties and DAILY_SUMMARY_SCHEMA["notes"] in allowed_properties:
+                    # Don't overwrite Notes - only update system fields
+                    # Notes is already excluded from properties dict, so we're good
+                    pass
+                
+                # Update existing page (Notes is not in properties dict, so it won't be overwritten)
                 self._notion_call_with_retries(
                     self.client.pages.update,
                     page_id=existing_page_id,
@@ -1862,7 +2002,7 @@ class NotionClient:
                 )
                 return True
             else:
-                # Create new page
+                # Create new page - Notes field will be empty initially (user can add later)
                 self._notion_call_with_retries(
                     self.client.pages.create,
                     parent={"database_id": self.database_id},
@@ -1874,14 +2014,18 @@ class NotionClient:
             return False
     
     def upsert_athlete_metrics(
-        self, athlete_name: str, metrics: Dict[str, Any]
+        self, athlete_name: str, metrics: Dict[str, Any], date_iso: str
     ) -> bool:
         """
-        Upsert athlete metrics row in Notion.
+        Upsert athlete metrics row in Notion (time series: one row per date).
+        
+        Creates a new entry if it's a different day, or updates existing entry if same day.
+        Ensures at most one entry per day per athlete.
         
         Args:
-            athlete_name: Name of the athlete (used as unique key)
+            athlete_name: Name of the athlete
             metrics: Dict with load_7d, load_28d, load_balance, etc.
+            date_iso: Date string in YYYY-MM-DD format (America/New_York timezone)
             
         Returns:
             True if successful, False otherwise
@@ -1893,8 +2037,8 @@ class NotionClient:
             ATHLETE_METRICS_SCHEMA["name"]: {
                 "title": [{"text": {"content": athlete_name}}]
             },
-            ATHLETE_METRICS_SCHEMA["updated_at"]: {
-                "date": {"start": datetime.now(timezone.utc).isoformat()}
+            ATHLETE_METRICS_SCHEMA["date"]: {
+                "date": {"start": date_iso}
             },
         }
         
@@ -1955,13 +2099,21 @@ class NotionClient:
                 k: v for k, v in properties.items() if k in allowed_properties
             }
         
-        # Find existing page by name
+        # Find existing page by name AND date (composite unique key - ensures at most one entry per day)
         try:
             response = self._database_query(
                 database_id=self.database_id,
                 filter={
-                    "property": ATHLETE_METRICS_SCHEMA["name"],
-                    "title": {"equals": athlete_name},
+                    "and": [
+                        {
+                            "property": ATHLETE_METRICS_SCHEMA["name"],
+                            "title": {"equals": athlete_name},
+                        },
+                        {
+                            "property": ATHLETE_METRICS_SCHEMA["date"],
+                            "date": {"equals": date_iso},
+                        },
+                    ]
                 },
             )
             existing_page_id = None
@@ -1969,7 +2121,7 @@ class NotionClient:
                 existing_page_id = response["results"][0]["id"]
             
             if existing_page_id:
-                # Update existing page
+                # Update existing page for this date (multiple syncs on same day update the same row)
                 self._notion_call_with_retries(
                     self.client.pages.update,
                     page_id=existing_page_id,
@@ -1977,7 +2129,7 @@ class NotionClient:
                 )
                 return True
             else:
-                # Create new page
+                # Create new page for this date (new day = new row in time series)
                 self._notion_call_with_retries(
                     self.client.pages.create,
                     parent={"database_id": self.database_id},
@@ -1985,7 +2137,7 @@ class NotionClient:
                 )
                 return True
         except Exception as e:
-            logger.warning(f"Error upserting athlete metrics for {athlete_name}: {e}")
+            logger.warning(f"Error upserting athlete metrics for {athlete_name} on {date_iso}: {e}")
             return False
 
 
@@ -2334,24 +2486,45 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
     
     # Optional: Daily Summary sync
     daily_summaries = None  # Will be computed if needed
+    daily_summary_client = None  # Will be set if Daily Summary DB is enabled
     if notion_daily_summary_db_id:
         try:
             logger.info("Syncing Daily Summary database...")
             daily_summary_client = NotionClient(notion_token, notion_daily_summary_db_id)
-            daily_summaries = aggregate_daily_summaries(activities, days)
             
-            daily_summary_stats = {"created": 0, "updated": 0, "failed": 0}
-            for date_iso, summary in daily_summaries.items():
+            # Calculate date range: sync window + 2 day buffer
+            today_ny = datetime.now(DAILY_BUCKET_TIMEZONE).date()
+            start_date = today_ny - timedelta(days=days + 2)
+            end_date = today_ny
+            
+            logger.info(
+                "Aggregating daily summaries for date range: %s to %s (%d days)",
+                start_date.isoformat(),
+                end_date.isoformat(),
+                (end_date - start_date).days + 1,
+            )
+            
+            daily_summaries = aggregate_daily_summaries(activities, start_date, end_date)
+            
+            daily_summary_stats = {"created": 0, "updated": 0, "failed": 0, "rest_days": 0}
+            for date_iso, summary in sorted(daily_summaries.items()):
+                # Track rest days (Session Count = 0)
+                if summary["session_count"] == 0:
+                    daily_summary_stats["rest_days"] += 1
+                
                 success = daily_summary_client.upsert_daily_summary(date_iso, summary)
                 if success:
-                    daily_summary_stats["created"] += 1  # Upsert doesn't distinguish
+                    # Try to determine if this was a create or update by checking if page exists
+                    # For now, we'll just count both as "created" since upsert doesn't tell us
+                    daily_summary_stats["created"] += 1
                 else:
                     daily_summary_stats["failed"] += 1
                 time.sleep(NOTION_RATE_LIMIT_DELAY_SECONDS)
             
             logger.info(
-                "Daily Summary sync: %d days processed, %d failed",
+                "Daily Summary sync: %d days processed (%d rest days), %d failed",
                 len(daily_summaries),
+                daily_summary_stats["rest_days"],
                 daily_summary_stats["failed"],
             )
             run_stats["daily_summary"]["days_processed"] = len(daily_summaries)
@@ -2368,15 +2541,29 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
             logger.info("Syncing Athlete Metrics database...")
             athlete_metrics_client = NotionClient(notion_token, notion_athlete_metrics_db_id)
             
-            # Compute rolling loads from daily summaries (preferred if already computed, otherwise compute now)
-            # Use local timezone for "today" to match daily summary date bucketing
-            # For simplicity, use UTC now and convert to date (daily summaries use local dates from Strava)
-            today = datetime.now(timezone.utc)
+            # Compute rolling loads from daily summaries
+            # Use America/New_York timezone for "today" to match daily summary date bucketing
+            today_ny = datetime.now(DAILY_BUCKET_TIMEZONE)
             if daily_summaries is None:
                 # Compute daily summaries for rolling load calculation
-                daily_summaries = aggregate_daily_summaries(activities, days)
+                today_date = today_ny.date()
+                start_date = today_date - timedelta(days=days + 2)
+                end_date = today_date
+                daily_summaries = aggregate_daily_summaries(activities, start_date, end_date)
             
-            rolling_loads = compute_rolling_loads(daily_summaries, today)
+            rolling_loads = compute_rolling_loads(daily_summaries, today_ny)
+            
+            # Compute Strain Volatility 7d from Daily Summary database
+            strain_volatility_7d = None
+            if daily_summary_client is not None:
+                try:
+                    strain_volatility_7d = compute_strain_volatility_7d(
+                        daily_summary_client,
+                        today_ny.date(),
+                    )
+                except Exception as e:
+                    logger.warning(f"Error computing strain volatility 7d: {e}")
+                    # Continue without strain volatility
             
             # Compute ETHR metrics from activities
             ethr_metrics = compute_ethr_metrics(activities)
@@ -2396,17 +2583,21 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                 "load_7d": load_7d_val if load_7d_val > 0 else None,
                 "load_28d": load_28d_val if load_28d_val > 0 else None,
                 "load_balance": load_balance,
+                "strain_volatility_7d": strain_volatility_7d,
             }
             
             # Add ETHR metrics
             metrics.update(ethr_metrics)
             
-            success = athlete_metrics_client.upsert_athlete_metrics(athlete_name, metrics)
+            # Get today's date in America/New_York timezone for the metrics snapshot
+            today_date_iso = today_ny.date().isoformat()
+            
+            success = athlete_metrics_client.upsert_athlete_metrics(athlete_name, metrics, today_date_iso)
             if success:
-                logger.info(f"Athlete Metrics sync: {athlete_name} metrics updated")
+                logger.info(f"Athlete Metrics sync: {athlete_name} metrics updated for {today_date_iso}")
                 run_stats["athlete_metrics"]["upserted"] = True
             else:
-                error_msg = f"Athlete Metrics sync: failed to update {athlete_name} metrics"
+                error_msg = f"Athlete Metrics sync: failed to update {athlete_name} metrics for {today_date_iso}"
                 logger.warning(error_msg)
                 run_stats["athlete_metrics"]["failed"] = True
                 run_stats["warnings"].append(error_msg)

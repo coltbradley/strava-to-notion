@@ -317,7 +317,7 @@ These databases are **completely optional** - the main Workouts sync will work p
 ### Why These Exist
 
 - **Daily Summary**: Aggregate activities by day for easier trend analysis and weekly/monthly reviews
-- **Athlete Metrics**: Track rolling training load to monitor fitness trends and balance
+- **Athlete Metrics**: Track rolling training load to monitor fitness trends and balance (time series: one entry per day)
 - **Load Points**: Zone-weighted training load metric (Z1×1 + Z2×2 + Z3×3 + Z4×4 + Z5×5) derived from HR zones
 
 ### Setup
@@ -354,12 +354,19 @@ These databases are **completely optional** - the main Workouts sync will work p
 5. Optionally set `ATHLETE_NAME` secret (default: "Athlete")
 
 **Required Properties:**
-- `Name` (Title) - Athlete name (unique key for upsert)
-- `Updated At` (Date) - Last update timestamp
+- `Name` (Title) - Athlete name
+- `Date` (Date) - Date of the metrics snapshot (unique key with Name - creates time series)
 - `Load 7d` (Number) - 7-day rolling load total
 - `Load 28d` (Number) - 28-day rolling load total
 - `Load Balance` (Number) - Ratio of 7d / 28d load
+- `Strain Volatility 7d` (Number) - Coefficient of variation of daily load over last 7 days
 - `Notes` (Text) - Will contain ETHR computation status or results
+
+**Behavior:**
+- Creates a new entry each day (up to one per day)
+- Updates existing entry if sync runs multiple times on the same day
+- Tracks metrics over time as a time series (allows trend analysis in Notion)
+- Not necessary to have an entry every day (only when sync runs)
 
 **ETHR Fields (Optional - Computed from Threshold Efforts):**
 The following fields are computed from qualifying threshold-effort activities:
