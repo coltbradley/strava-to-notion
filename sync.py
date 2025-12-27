@@ -1137,39 +1137,75 @@ class NotionSchemaCache:
                 database_id=database_id,
             )
             
-            # Debug: log the database response structure
+            # Debug: log the database response structure (INFO level to see in logs)
             if isinstance(db, dict):
                 db_title = db.get("title", [{}])[0].get("plain_text", "Unknown") if db.get("title") else "Unknown"
-                logger.debug(
-                    "Retrieved database '%s' (ID: %s), type: %s, keys in response: %s",
+                all_keys = list(db.keys())
+                logger.info(
+                    "Retrieved database '%s' (ID: %s), response type: %s, top-level keys: %s",
                     db_title,
                     database_id[:8],
                     type(db).__name__,
-                    list(db.keys())[:10],  # First 10 keys for debugging
+                    all_keys[:15],  # First 15 keys for debugging
                 )
+                
+                # Check if properties key exists
+                if "properties" in db:
+                    props = db["properties"]
+                    logger.info(
+                        "Found 'properties' key in response, type: %s, length: %s",
+                        type(props).__name__,
+                        len(props) if isinstance(props, dict) else "N/A",
+                    )
+                else:
+                    logger.warning(
+                        "No 'properties' key in database response! Available keys: %s",
+                        all_keys,
+                    )
             else:
                 logger.warning(
-                    "Database retrieve returned non-dict type %s for database %s",
+                    "Database retrieve returned non-dict type %s for database %s. Value: %s",
                     type(db).__name__,
                     database_id[:8],
+                    str(db)[:500],
                 )
             
-            props = db.get("properties", {}) if isinstance(db, dict) else {}
+            # Extract properties - handle both dict and potential Response object
+            # notion-client SDK returns dicts directly, but let's be defensive
+            if isinstance(db, dict):
+                props = db.get("properties", {})
+                # Double-check: if properties exists but is None or empty, that's suspicious
+                if props is None:
+                    logger.warning(
+                        "Database response has 'properties' key but value is None for database %s",
+                        database_id[:8],
+                    )
+                    props = {}
+            else:
+                # Try to access as object attribute (notion-client might return a Response object)
+                props = getattr(db, "properties", {})
+                if not isinstance(props, dict):
+                    # Try to convert to dict if it's some other structure
+                    try:
+                        props = dict(props) if hasattr(props, "__iter__") and not isinstance(props, str) else {}
+                    except Exception:
+                        props = {}
             
-            # Additional debugging for properties
+            # Additional debugging for properties (INFO level)
             if isinstance(props, dict):
-                logger.debug(
-                    "Extracted properties dict with %d properties: %s",
+                prop_keys = list(props.keys())
+                logger.info(
+                    "Extracted properties dict with %d properties. Property names: %s",
                     len(props),
-                    list(props.keys())[:10] if props else "[]",
+                    prop_keys[:20] if prop_keys else "[]",
                 )
             else:
                 logger.warning(
-                    "Properties is not a dict (type: %s, value: %s) for database %s",
+                    "Properties is not a dict (type: %s). Value preview: %s",
                     type(props).__name__,
-                    str(props)[:200],
-                    database_id[:8],
+                    str(props)[:500],
                 )
+                props = {}
             
             keys = set(props.keys())
             # If we somehow see zero properties, treat this as a soft failure so we
