@@ -43,6 +43,8 @@ HTTP_TIMEOUT_SECONDS = 30
 HTTP_MAX_RETRIES = 3
 HTTP_BACKOFF_FACTOR = 1.0
 HTTP_BACKOFF_JITTER_MAX = 0.25
+# Special backoff for rate limits (429) - longer delay since we've hit a limit
+HTTP_RATE_LIMIT_BACKOFF_SECONDS = 60  # Wait 60 seconds before retrying rate limit errors
 NOTION_RATE_LIMIT_DELAY_SECONDS = 0.1
 
 # Constants for unit conversions
@@ -239,12 +241,24 @@ def http_request_with_retries(
                 raise
 
             # Backoff with jitter
-            sleep_seconds = backoff_factor * (2 ** (attempts - 1))
-            sleep_seconds += random.uniform(0, HTTP_BACKOFF_JITTER_MAX)
-            logger.warning(
-                f"Retrying {method} {url} after error (attempt {attempts}/{max_retries}, "
-                f"status={status}): {e}"
-            )
+            # For rate limits (429), use longer fixed delays to avoid hitting limits repeatedly
+            if status == 429:
+                # Strava rate limits are typically 100 requests/15min or 1000/day
+                # Use progressively longer delays: 60s, 120s, 180s
+                sleep_seconds = HTTP_RATE_LIMIT_BACKOFF_SECONDS * attempts
+                logger.warning(
+                    f"Strava API rate limit (429) - waiting {sleep_seconds:.0f} seconds before retry "
+                    f"{attempts}/{max_retries}. If this persists, you may have exceeded your daily/hourly "
+                    f"rate limit. Consider reducing sync frequency or waiting before next run."
+                )
+            else:
+                # For other retryable errors (5xx), use exponential backoff
+                sleep_seconds = backoff_factor * (2 ** (attempts - 1))
+                sleep_seconds += random.uniform(0, HTTP_BACKOFF_JITTER_MAX)
+                logger.warning(
+                    f"Retrying {method} {url} after error (attempt {attempts}/{max_retries}, "
+                    f"status={status}): {e}"
+                )
             time.sleep(sleep_seconds)
         except requests.exceptions.RequestException as e:
             # Non-retryable request exception
@@ -1762,7 +1776,25 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
     try:
         activities = strava.get_recent_activities(days=days)
     except Exception as e:
-        logger.error(f"Failed to fetch Strava activities: {e}")
+        error_msg = str(e)
+        # Check if it's a rate limit error
+        if "429" in error_msg or "rate limit" in error_msg.lower():
+            logger.error(
+                "Strava API rate limit exceeded. The sync cannot continue until rate limits reset.\n"
+                "This usually happens if:\n"
+                "  1. Multiple sync runs happened too quickly\n"
+                "  2. The update_weather script was run recently and consumed API quota\n"
+                "  3. You've exceeded Strava's daily/hourly rate limits\n"
+                "\n"
+                "**What to do:**\n"
+                "  - Wait 15-30 minutes before running the sync again\n"
+                "  - Check if update_weather.py ran recently (it makes many API calls)\n"
+                "  - Consider reducing sync frequency if this happens often\n"
+                "\n"
+                f"Error details: {error_msg}"
+            )
+        else:
+            logger.error(f"Failed to fetch Strava activities: {e}")
         sys.exit(1)
     
     if not activities:
@@ -1890,16 +1922,21 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                     activity.get("_hr_data_quality"),
                 )
 
-        # Fetch primary photo URL only when creating a new page (no existing_page_id)
+        # Find existing page early (before fetching optional data)
         existing_page_id = existing_map.get(activity_id)
+        if not existing_page_id:
+            # Fallback to per-activity search if not in batch map
+            existing_page_id = notion.find_page_by_activity_id(activity_id)
+        
+        # Fetch primary photo URL only when creating a new page (no existing_page_id)
         if not existing_page_id:
             photo_url = strava.get_activity_primary_photo_url(activity.get("id"))
             if photo_url:
                 activity["_photo_url"] = photo_url
         
-        # Fetch weather data for ALL outdoor activities with location (both new and existing)
-        # This ensures weather data is updated for existing activities as well
-        if sport_type not in INDOOR_SPORTS:
+        # Fetch weather data only for NEW outdoor activities (weather doesn't change for past activities)
+        # The update_weather.py script handles backfilling missing weather for existing activities
+        if not existing_page_id and sport_type not in INDOOR_SPORTS:
             # Strava API uses start_latlng (array format [lat, lng]) as the primary field
             start_latlng = activity.get("start_latlng")
             if start_latlng and len(start_latlng) >= 2 and start_latlng[0] is not None and start_latlng[1] is not None:
@@ -1924,14 +1961,6 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
                     logger.warning(f"Error fetching weather for activity {activity_id}: {e}")
                     import traceback
                     logger.debug(f"Weather fetch traceback: {traceback.format_exc()}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
-        
-        # Find existing page (may have already been looked up above for photos)
-        existing_page_id = existing_map.get(activity_id) or existing_page_id
-        if not existing_page_id:
-            # Fallback to per-activity search if not in batch map
-            existing_page_id = notion.find_page_by_activity_id(activity_id)
         
         # Upsert activity
         try:

@@ -506,7 +506,7 @@ A separate workflow (`.github/workflows/update-weather.yml`) runs monthly to upd
 
 ## Update Weather for Past Activities (Optional)
 
-By default, the sync only fetches weather for activities within the sync window (last 30 days). To update weather data for all past activities, there's a separate script that can be run manually or on a schedule.
+The regular sync fetches weather data **only for new activities** (to avoid unnecessary API calls since weather for past activities doesn't change). The `update_weather.py` script handles backfilling weather for existing activities or activities older than the sync window.
 
 ### What It Does
 
@@ -515,6 +515,13 @@ By default, the sync only fetches weather for activities within the sync window 
 - Fetches location from Strava API (using Activity ID)
 - Retrieves historical weather data for the activity date/time and location
 - Updates the Notion page with `Temperature (°F)` and `Weather Conditions`
+
+### When to Use It
+
+- **Initial setup**: Backfill weather for all historical activities
+- **After adding weather properties**: Update activities that were created before weather properties existed
+- **Periodic maintenance**: Monthly run to catch any activities that missed weather data
+- **Activities older than sync window**: The regular sync only covers the last 30 days
 
 ### Running Manually
 
@@ -702,6 +709,27 @@ Each sync run:
 ---
 
 ## Troubleshooting
+
+### Strava API Rate Limit Errors (429)
+
+If you see errors like `HTTP error 429` or "rate limit", Strava has temporarily blocked requests due to too many API calls.
+
+**Common causes:**
+- Multiple sync runs happening too quickly
+- The `update_weather.py` script was run recently (it makes many API calls to fetch locations)
+- Exceeding Strava's rate limits (typically 100 requests per 15 minutes or 1000 requests per day)
+
+**Solutions:**
+1. **Wait 15-30 minutes** before running the sync again (rate limits reset on a rolling window)
+2. **Check recent runs** - If you just ran `update_weather.py`, wait before running the main sync
+3. **Reduce sync frequency** - If rate limits happen often, consider changing the sync schedule from hourly to every 2-3 hours
+4. **Space out scripts** - Don't run `update_weather.py` and the main sync at the same time
+
+The sync script will automatically retry with longer delays when it encounters rate limits, but if you've exceeded the limit, you'll need to wait.
+
+---
+
+## Troubleshooting (Other Issues)
 
 ### Common Issues
 
