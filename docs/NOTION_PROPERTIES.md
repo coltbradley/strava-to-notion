@@ -58,3 +58,4 @@ This document lists **all** Notion database property names used by the sync scri
 - If a property doesn't exist in your database, the sync will skip it gracefully
 - All properties except Required ones are optional - the sync works with just the required set
 
+

@@ -5,8 +5,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
-# Add parent directory to path to import scripts
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add repo root to path to import scripts
+repo_root = Path(__file__).parent.parent
+sys.path.insert(0, str(repo_root))
 
 from scripts.weekly_status_report import (
     aggregate_stats,
@@ -123,4 +124,5 @@ def test_format_error_fingerprints_empty():
     """Test formatting with no errors."""
     result = format_error_fingerprints({})
     assert "None" in result
+
 

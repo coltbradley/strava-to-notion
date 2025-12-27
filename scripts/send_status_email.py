@@ -122,9 +122,9 @@ def main():
         print(f"Error: Missing required environment variables: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
     
-    # Load report
-    script_dir = Path(__file__).parent.parent
-    report_file = script_dir / "weekly_status.md"
+    # Load report (scripts/ is in repo root, report is also in repo root)
+    repo_root = Path(__file__).parent.parent
+    report_file = repo_root / "weekly_status.md"
     
     if not report_file.exists():
         print(f"Error: Report file not found: {report_file}", file=sys.stderr)
@@ -162,4 +162,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

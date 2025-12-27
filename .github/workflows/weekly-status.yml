@@ -22,7 +22,6 @@ jobs:
       
       - name: Generate weekly status report
         id: generate-report
-        working-directory: strava-notion-sync
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
@@ -30,7 +29,6 @@ jobs:
       
       - name: Send email report
         id: send-email
-        working-directory: strava-notion-sync
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
@@ -48,7 +46,8 @@ jobs:
         with:
           name: weekly-status-report
           path: |
-            strava-notion-sync/weekly_status.md
-            strava-notion-sync/weekly_status.json
+            weekly_status.md
+            weekly_status.json
           retention-days: 30
+
 

@@ -1302,7 +1302,16 @@ class NotionClient:
             if filtered_out:
                 logger.debug(f"Properties filtered out (not in schema): {filtered_out}")
         else:
+            # Schema filtering disabled - be conservative and skip optional properties
+            # that are likely to cause errors if they don't exist
             properties = {k: v for k, v in properties.items() if v is not None}
+            # Remove Load (pts) if schema is unknown (it's optional and often missing)
+            if NOTION_SCHEMA["load_pts"] in properties:
+                logger.debug(
+                    f"Schema unknown - skipping optional property '{NOTION_SCHEMA['load_pts']}' "
+                    "to avoid errors. Add this property to your Notion database if you want load points."
+                )
+                properties.pop(NOTION_SCHEMA["load_pts"], None)
         
         try:
             if existing_page_id:
@@ -1321,12 +1330,27 @@ class NotionClient:
                     properties=properties,
                 )
                 return True
+        except APIResponseError as e:
+            error_msg = str(e)
+            status = getattr(e, "status", None)
+            
+            # Handle 400 errors that indicate a missing property
+            if status == 400:
+                # Check if it's a property that doesn't exist
+                if "property" in error_msg.lower() and ("doesn't exist" in error_msg.lower() or "is not a property" in error_msg.lower()):
+                    # Extract property name from error if possible
+                    logger.warning(
+                        f"Property error for activity {activity.get('id')}: {error_msg}. "
+                        "This property will be skipped in future runs once schema is properly loaded."
+                    )
+                    # Return False so it's counted as failed, but don't abort the whole sync
+                    return False
+            
+            # Re-raise other APIResponseErrors (they'll be handled by retry logic if retryable)
+            logger.error(f"Notion API error upserting activity {activity.get('id')}: {error_msg}")
+            return False
         except Exception as e:
             error_msg = str(e)
-            # Check if it's a property that doesn't exist (skip it)
-            if "property" in error_msg.lower() and "doesn't exist" in error_msg.lower():
-                logger.debug(f"Skipping property that doesn't exist in Notion DB: {error_msg}")
-                return True  # Consider this a success (we'll skip missing properties)
             logger.error(f"Error upserting activity {activity.get('id')}: {error_msg}")
             return False
     

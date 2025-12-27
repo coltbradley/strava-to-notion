@@ -72,3 +72,4 @@ strava-to-notion/
 9. **Optional DB failures**: Logged as warnings but no aggregate stats
 10. **No dry-run mode**: Cannot test sync without writing to Notion
 
+

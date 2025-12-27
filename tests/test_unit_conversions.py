@@ -31,3 +31,4 @@ def test_seconds_per_minute():
     """Test seconds per minute constant."""
     assert SECONDS_PER_MINUTE == 60
 
+

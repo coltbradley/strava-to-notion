@@ -186,9 +186,9 @@ def main():
     """Main entry point."""
     import os
     
-    # Determine paths
-    script_dir = Path(__file__).parent.parent
-    stats_file = script_dir / "stats" / "run_stats.json"
+    # Determine paths (scripts/ is in repo root, stats/ is also in repo root)
+    repo_root = Path(__file__).parent.parent
+    stats_file = repo_root / "stats" / "run_stats.json"
     
     # Load and filter stats
     all_stats = load_run_stats(stats_file)
@@ -206,13 +206,13 @@ def main():
     week_end = datetime.now(timezone.utc)
     report = generate_report(aggregated, week_end, commit_sha)
     
-    # Write to file
-    output_file = script_dir / "weekly_status.md"
+    # Write to file (in repo root)
+    output_file = repo_root / "weekly_status.md"
     with open(output_file, "w") as f:
         f.write(report)
     
     # Also write JSON version
-    json_file = script_dir / "weekly_status.json"
+    json_file = repo_root / "weekly_status.json"
     output_data = {
         "week_end": week_end.isoformat(),
         "commit_sha": commit_sha,

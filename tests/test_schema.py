@@ -62,3 +62,4 @@ def test_hr_zone_schema_format():
         formatted = zone_prop.format(zone=zone)
         assert formatted == f"HR Zone {zone} (min)"
 
+

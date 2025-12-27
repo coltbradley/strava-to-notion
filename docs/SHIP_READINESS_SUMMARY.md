@@ -187,3 +187,4 @@ pytest tests/ -v
 - Stats persistence is non-fatal (sync continues even if stats write fails)
 - No new dependencies required (uses stdlib: json, smtplib, email)
 
+

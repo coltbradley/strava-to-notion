@@ -118,3 +118,4 @@
 - [x] Error handling that logs but doesn't abort optional syncs
 - [x] Non-cardio sports excluded from load but included in other metrics
 
+

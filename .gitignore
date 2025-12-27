@@ -44,8 +44,9 @@ Thumbs.db
 
 # Project specific
 *.log
-run_stats.json
+
+# Runtime stats and reports
+stats/
 weekly_status.md
 weekly_status.json
-stats/
 
