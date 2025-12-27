@@ -2063,8 +2063,24 @@ def sync_strava_to_notion(days: int = DEFAULT_SYNC_DAYS, failure_threshold: floa
             # Fallback to per-activity search if not in batch map
             existing_page_id = notion.find_page_by_activity_id(activity_id)
         
-        # Fetch primary photo URL only when creating a new page (no existing_page_id)
+        # Fetch primary photo URL for new activities OR activities in the past week
+        # (photos may be added later, or URLs may change)
+        should_fetch_photo = False
         if not existing_page_id:
+            # Always fetch for new activities
+            should_fetch_photo = True
+        else:
+            # Also fetch for existing activities in the past week (to catch photo updates)
+            try:
+                start_date = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
+                days_ago = (datetime.now(timezone.utc) - start_date).days
+                if days_ago <= 7:
+                    should_fetch_photo = True
+            except Exception:
+                # If date parsing fails, skip photo fetch for this activity
+                pass
+        
+        if should_fetch_photo:
             photo_url = strava.get_activity_primary_photo_url(activity.get("id"))
             if photo_url:
                 activity["_photo_url"] = photo_url
