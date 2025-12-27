@@ -44,6 +44,41 @@ from sync import (
 )
 
 
+def _database_query_fallback(
+    notion_token: str,
+    database_id: str,
+    **query_params: Any
+) -> Dict:
+    """
+    Query Notion database with fallback for SDK versions that don't expose databases.query.
+    
+    This is a standalone version of the _database_query method from NotionClient.
+    """
+    client = Client(auth=notion_token)
+    
+    # Preferred path: databases.query exists on the SDK endpoint
+    if hasattr(client.databases, "query"):
+        return getattr(client.databases, "query")(
+            database_id=database_id,
+            **query_params
+        )
+    
+    # Fallback path for older SDKs: call REST API directly
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {notion_token}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    response = http_request_with_retries(
+        "POST",
+        url,
+        headers=headers,
+        json=query_params,
+    )
+    return response.json()
+
+
 def get_all_activities(
     notion_token: str,
     workouts_db_id: str,
@@ -54,7 +89,6 @@ def get_all_activities(
     
     Returns list of activity page dicts with properties.
     """
-    client = Client(auth=notion_token)
     activities = []
     start_cursor = None
     
@@ -72,8 +106,7 @@ def get_all_activities(
     logger.info(f"Fetching activities from Notion (max_days={max_days or 'all'})...")
     
     while True:
-        query_params = {
-            "database_id": workouts_db_id,
+        query_params: Dict[str, Any] = {
             "sorts": [
                 {
                     "property": NOTION_SCHEMA["date"],
@@ -89,7 +122,11 @@ def get_all_activities(
             query_params["start_cursor"] = start_cursor
         
         try:
-            response = client.databases.query(**query_params)
+            response = _database_query_fallback(
+                notion_token,
+                workouts_db_id,
+                **query_params
+            )
             
             for page in response.get("results", []):
                 activities.append(page)
