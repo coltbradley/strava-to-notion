@@ -466,6 +466,82 @@ python sync.py
 
 ---
 
+## Update Weather for Past Activities (Optional)
+
+By default, the sync only fetches weather for activities within the sync window (last 30 days). To update weather data for all past activities, there's a separate script that can be run manually or on a schedule.
+
+### What It Does
+
+- Queries all activities from your Notion Workouts database
+- Identifies outdoor activities missing weather data
+- Fetches location from Strava API (using Activity ID)
+- Retrieves historical weather data for the activity date/time and location
+- Updates the Notion page with `Temperature (°F)` and `Weather Conditions`
+
+### Running Manually
+
+```bash
+# Update all activities
+python scripts/update_weather.py
+
+# Only update activities from last 90 days
+python scripts/update_weather.py --days 90
+
+# Dry run (see what would be updated without making changes)
+python scripts/update_weather.py --dry-run
+```
+
+### Automated via GitHub Actions
+
+A separate workflow (`.github/workflows/update-weather.yml`) runs monthly to update weather for all past activities. It uses the same secrets as the main sync workflow.
+
+**To enable:**
+1. The workflow file is already in the repository
+2. Ensure `WEATHER_API_KEY` is set in GitHub Secrets
+3. The workflow will run automatically on the 1st of each month at 2 AM UTC
+
+**Note:** This script requires Strava API access to fetch activity locations, so it uses the same Strava credentials as the main sync.
+
+---
+
+## Update Weather for Past Activities (Optional)
+
+By default, the sync only fetches weather for activities within the sync window (last 30 days). To update weather data for all past activities, there's a separate script that can be run manually or on a schedule.
+
+### What It Does
+
+- Queries all activities from your Notion Workouts database
+- Identifies outdoor activities missing weather data
+- Fetches location from Strava API (using Activity ID)
+- Retrieves historical weather data for the activity date/time and location
+- Updates the Notion page with `Temperature (°F)` and `Weather Conditions`
+
+### Running Manually
+
+```bash
+# Update all activities
+python scripts/update_weather.py
+
+# Only update activities from last 90 days
+python scripts/update_weather.py --days 90
+
+# Dry run (see what would be updated without making changes)
+python scripts/update_weather.py --dry-run
+```
+
+### Automated via GitHub Actions
+
+A separate workflow (`.github/workflows/update-weather.yml`) runs monthly to update weather for all past activities. It uses the same secrets as the main sync workflow.
+
+**To enable:**
+1. The workflow file is already in the repository
+2. Ensure `WEATHER_API_KEY` is set in GitHub Secrets (same as main sync)
+3. The workflow will run automatically on the 1st of each month at 2 AM UTC
+
+**Note:** This script requires Strava API access to fetch activity locations, so it uses the same Strava credentials as the main sync.
+
+---
+
 ## Weekly Status Report (Optional)
 
 The sync script automatically persists run statistics after each execution. A weekly email report can be configured to aggregate and send these statistics.
