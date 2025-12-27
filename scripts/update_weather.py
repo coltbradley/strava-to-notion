@@ -150,7 +150,11 @@ def extract_activity_info(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not sport_prop:
         return None
     
-    sport_type = sport_prop.get("select", {}).get("name")
+    sport_select = sport_prop.get("select")
+    if not sport_select:
+        return None
+    
+    sport_type = sport_select.get("name")
     if not sport_type or sport_type in INDOOR_SPORTS:
         # Skip indoor activities
         return None
@@ -276,32 +280,64 @@ def update_activity_weather(
             logger.warning(f"No weather data returned for activity {activity_id}")
             return False
         
-        # Build properties dict
-        properties = {}
+        # Build properties dict - but filter against schema first
+        all_properties = {}
         
         temp_f = weather.get("temp_f")
         if temp_f is not None:
-            properties[NOTION_SCHEMA["temperature_f"]] = {"number": round(temp_f, 1)}
+            all_properties[NOTION_SCHEMA["temperature_f"]] = {"number": round(temp_f, 1)}
         
         weather_summary = WeatherClient.make_weather_summary(weather)
         if weather_summary:
-            properties[NOTION_SCHEMA["weather_conditions"]] = {
+            all_properties[NOTION_SCHEMA["weather_conditions"]] = {
                 "rich_text": [{"text": {"content": weather_summary}}]
             }
         
-        if not properties:
+        if not all_properties:
             logger.warning(f"No weather properties to update for activity {activity_id}")
+            return False
+        
+        # Filter properties against schema (only write properties that exist in the database)
+        allowed_properties = notion_client._ensure_schema_loaded()
+        properties = {}
+        
+        if allowed_properties is not None:
+            # Schema-aware filtering: only include properties that exist in the database
+            for prop_name, prop_value in all_properties.items():
+                if prop_name in allowed_properties:
+                    properties[prop_name] = prop_value
+                else:
+                    logger.debug(f"Skipping property '{prop_name}' - not in database schema")
+        else:
+            # Schema loading failed - try to write all properties, but handle errors gracefully
+            properties = all_properties
+        
+        if not properties:
+            logger.warning(f"No weather properties to write after schema filtering for activity {activity_id}")
             return False
         
         if dry_run:
             logger.info(f"[DRY RUN] Would update activity {activity_id} with weather: {weather_summary}")
             return True
         
-        # Update Notion page
-        notion_client.client.pages.update(
-            page_id=page_id,
-            properties=properties,
-        )
+        # Update Notion page (use NotionClient's retry wrapper)
+        try:
+            from notion_client.errors import APIResponseError
+            notion_client._notion_call_with_retries(
+                notion_client.client.pages.update,
+                page_id=page_id,
+                properties=properties,
+            )
+        except APIResponseError as e:
+            error_msg = str(e)
+            status = getattr(e, "status", None)
+            # Handle 400 errors that indicate a missing property
+            if status == 400:
+                if "property" in error_msg.lower() and ("doesn't exist" in error_msg.lower() or "not a property" in error_msg.lower()):
+                    logger.debug(f"Property doesn't exist in database for activity {activity_id}: {error_msg}")
+                    return False
+            # Re-raise other API errors
+            raise
         
         logger.info(f"Updated weather for activity {activity_id}: {weather_summary}")
         return True
