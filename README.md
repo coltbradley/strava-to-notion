@@ -510,7 +510,7 @@ The regular sync fetches weather data **only for new activities** (to avoid unne
 
 ### What It Does
 
-- Queries the 3 most recent activities from your Notion Workouts database
+- Queries the 90 most recent activities from your Notion Workouts database
 - Identifies outdoor activities missing weather data
 - Fetches location from Strava API (using Activity ID)
 - Retrieves historical weather data for the activity date/time and location
@@ -518,28 +518,28 @@ The regular sync fetches weather data **only for new activities** (to avoid unne
 
 ### When to Use It
 
-- **Recent activities**: Update weather for the 3 most recent activities that may have missed weather data
+- **Recent activities**: Update weather for the 90 most recent activities that may have missed weather data
 - **Periodic maintenance**: Monthly run to catch any recent activities that missed weather data
 - **Activities older than sync window**: The regular sync only covers the last 30 days
 
 ### Running Manually
 
 ```bash
-# Update the 3 most recent activities
+# Update the 90 most recent activities
 python scripts/update_weather.py
 
-# Update the 3 most recent activities from last 90 days
+# Update the 90 most recent activities from last 90 days
 python scripts/update_weather.py --days 90
 
 # Dry run (see what would be updated without making changes)
 python scripts/update_weather.py --dry-run
 ```
 
-**Note:** By default, this script only processes the **3 most recent activities** to avoid excessive API calls and rate limits. Use `--days` to filter by date range, but it will still only process the 3 most recent within that range.
+**Note:** By default, this script processes the **90 most recent activities** to balance API usage and coverage. Use `--days` to filter by date range, but it will still only process the 90 most recent within that range.
 
 ### Automated via GitHub Actions
 
-A separate workflow (`.github/workflows/update-weather.yml`) runs monthly to update weather for the 3 most recent activities. It uses the same secrets as the main sync workflow.
+A separate workflow (`.github/workflows/update-weather.yml`) runs monthly to update weather for the 90 most recent activities. It uses the same secrets as the main sync workflow.
 
 **To enable:**
 1. The workflow file is already in the repository

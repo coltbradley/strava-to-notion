@@ -12,10 +12,10 @@ Usage:
     python scripts/update_weather.py [--days N] [--dry-run]
 
 Options:
-    --days N: Only update activities from the last N days (default: all activities, but still limited to 3 most recent)
+    --days N: Only update activities from the last N days (default: all activities, but still limited to 90 most recent)
     --dry-run: Show what would be updated without actually updating Notion
 
-Note: By default, this script only processes the 3 most recent activities to avoid excessive API calls.
+Note: By default, this script processes the 90 most recent activities to balance API usage and coverage.
 """
 
 import argparse
@@ -354,7 +354,7 @@ def main():
         "--days",
         type=int,
         default=None,
-        help="Only update activities from the last N days (default: all activities, but still limited to 3 most recent)",
+        help="Only update activities from the last N days (default: all activities, but still limited to 90 most recent)",
     )
     parser.add_argument(
         "--dry-run",
@@ -383,8 +383,8 @@ def main():
         print("Error: Strava credentials not set (STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_REFRESH_TOKEN)", file=sys.stderr)
         sys.exit(1)
     
-    # Get activities (limit to 3 most recent)
-    activities = get_all_activities(notion_token, workouts_db_id, max_days=args.days, max_activities=3)
+    # Get activities (limit to 90 most recent)
+    activities = get_all_activities(notion_token, workouts_db_id, max_days=args.days, max_activities=90)
     
     if not activities:
         logger.info("No activities found")
