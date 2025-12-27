@@ -274,6 +274,37 @@ def get_last_activity_weather(
         return None
 
 
+def format_health_status(value: bool, enabled: bool = True) -> str:
+    """Format health status with emoji."""
+    if not enabled:
+        return "⚪ Not configured (optional)"
+    return "✅ Working" if value else "❌ Not accessible"
+
+
+def format_error_explanation(error_fingerprint: str) -> str:
+    """Provide human-readable explanation and fix guidance for common errors."""
+    error_lower = error_fingerprint.lower()
+    
+    if "property" in error_lower and ("doesn't exist" in error_lower or "not a property" in error_lower):
+        if "weather conditions" in error_lower or "temperature" in error_lower:
+            return "**Issue:** Weather properties missing in Notion database\n\n**Fix:** Add these properties to your Workouts database:\n- `Temperature (°F)` (Number type)\n- `Weather Conditions` (Rich text type)\n\nSee `docs/NOTION_PROPERTIES.md` for exact property names and types."
+        elif "load (pts)" in error_lower or "load" in error_lower:
+            return "**Issue:** Load (pts) property missing in Notion database\n\n**Fix:** Add `Load (pts)` (Number type) to your Workouts database, or this is optional and can be ignored if you don't need load points."
+        else:
+            return "**Issue:** A property is missing in your Notion database\n\n**Fix:** Check the error details and add the missing property. See `docs/NOTION_PROPERTIES.md` for a complete list of properties."
+    
+    if "refresh token" in error_lower or "401" in error_lower:
+        return "**Issue:** Strava authentication failed\n\n**Fix:** Regenerate your refresh token:\n1. Go to https://www.strava.com/settings/apps\n2. Revoke access to your app\n3. Re-authorize with scope: `read,activity:read_all,profile:read_all`\n4. Update `STRAVA_REFRESH_TOKEN` in GitHub Secrets"
+    
+    if "notion" in error_lower and ("token" in error_lower or "unauthorized" in error_lower):
+        return "**Issue:** Notion authentication failed\n\n**Fix:** Check your Notion integration:\n1. Verify `NOTION_TOKEN` in GitHub Secrets is correct\n2. Ensure the integration has access to your database\n3. Check integration permissions in Notion Settings → Connections"
+    
+    if "schema" in error_lower and "0 properties" in error_lower:
+        return "**Issue:** Could not read Notion database schema\n\n**Fix:** Check database permissions:\n1. Ensure the Notion integration has access to the database\n2. Verify the database ID is correct in GitHub Secrets\n3. Check that the integration hasn't been revoked"
+    
+    return "**Issue:** Unexpected error occurred\n\n**Fix:** Check the full error logs in GitHub Actions for details."
+
+
 def generate_report(
     aggregated: Dict[str, Any],
     week_end: datetime,
@@ -284,128 +315,187 @@ def generate_report(
     """Generate markdown report."""
     week_end_str = week_end.strftime("%Y-%m-%d")
     
-    report = f"""# Strava → Notion Sync Status Report
+    # Calculate health indicators
+    workouts_healthy = aggregated['workouts']['failed'] == 0 and aggregated['workouts']['fetched'] > 0
+    daily_summary_healthy = not aggregated['daily_summary']['enabled'] or aggregated['daily_summary']['total_failed'] == 0
+    athlete_metrics_healthy = not aggregated['athlete_metrics']['enabled'] or aggregated['athlete_metrics']['total_failed'] == 0
+    overall_healthy = workouts_healthy and daily_summary_healthy and athlete_metrics_healthy and aggregated['total_errors'] == 0
+    
+    report = f"""# 📊 Strava → Notion Sync Weekly Status Report
 
 **Week ending:** {week_end_str}  
 **Repository:** strava-to-notion  
-**Commit:** {commit_sha}  
+**Commit:** `{commit_sha}`  
 
 ---
 
-## Run Stats
+## 🎯 Quick Summary
 
-**Total sync runs in past 7 days:** {aggregated['total_runs']}
+{"✅ **Everything is working well!** All systems operational." if overall_healthy else "⚠️ **Attention needed** - See details below"}
 
-### Workouts Database
-
-- **Fetched from Strava:** {aggregated['workouts']['fetched']}
-- **Created in Notion:** {aggregated['workouts']['created']}
-- **Updated in Notion:** {aggregated['workouts']['updated']}
-- **Skipped:** {aggregated['workouts']['skipped']}
-- **Failed:** {aggregated['workouts']['failed']}
-
-### Daily Summary Database
-
-- **Enabled:** {aggregated['daily_summary']['enabled']}
-- **Days processed:** {aggregated['daily_summary']['total_days']}
-- **Failed upserts:** {aggregated['daily_summary']['total_failed']}
-
-### Athlete Metrics Database
-
-- **Enabled:** {aggregated['athlete_metrics']['enabled']}
-- **Successful upserts:** {aggregated['athlete_metrics']['total_upserted']}
-- **Failed upserts:** {aggregated['athlete_metrics']['total_failed']}
+**Sync Status:** {"🟢 Healthy" if workouts_healthy else "🔴 Issues detected"}  
+**Errors this week:** {aggregated['total_errors']}  
+**Failed activities:** {aggregated['workouts']['failed']}  
 
 ---
 
-## Warnings
+## 📈 Activity Sync Summary
 
-**Total warnings:** {aggregated['total_warnings']}
+**Total sync runs this week:** {aggregated['total_runs']}
+
+### Workouts Database {"✅" if workouts_healthy else "❌"}
+
+- **Activities fetched from Strava:** {aggregated['workouts']['fetched']}
+- **New activities created:** {aggregated['workouts']['created']}
+- **Existing activities updated:** {aggregated['workouts']['updated']}
+- **Activities skipped:** {aggregated['workouts']['skipped']}
+- **Activities failed:** {aggregated['workouts']['failed']}
+
+{f"⚠️ **Warning:** {aggregated['workouts']['failed']} activities failed to sync. Check error details below." if aggregated['workouts']['failed'] > 0 else ""}
+
+### Daily Summary Database {format_health_status(daily_summary_healthy, aggregated['daily_summary']['enabled'])}
+
+{"" if not aggregated['daily_summary']['enabled'] else f"""- **Days processed:** {aggregated['daily_summary']['total_days']}
+- **Failed updates:** {aggregated['daily_summary']['total_failed']}
+{chr(10) + f"⚠️ **Warning:** {aggregated['daily_summary']['total_failed']} days failed to update. Check your Daily Summary database configuration." if aggregated['daily_summary']['total_failed'] > 0 else ""}"""}
+
+### Athlete Metrics Database {format_health_status(athlete_metrics_healthy, aggregated['athlete_metrics']['enabled'])}
+
+{"" if not aggregated['athlete_metrics']['enabled'] else f"""- **Successful updates:** {aggregated['athlete_metrics']['total_upserted']}
+- **Failed updates:** {aggregated['athlete_metrics']['total_failed']}
+{chr(10) + f"⚠️ **Warning:** Athlete metrics updates are failing. Check your Athlete Metrics database configuration." if aggregated['athlete_metrics']['total_failed'] > 0 else ""}"""}
 
 ---
 
-## Errors
-
-**Total errors:** {aggregated['total_errors']}
-
-**Top error patterns:**
-
-{format_error_fingerprints(aggregated['error_fingerprints'])}
-
----
-
-## Database Access Verification
+## 🔍 Database Access Check
 
 """
     
     # Add database access section
     if db_access:
-        report += "### Workouts Database\n\n"
         w = db_access["workouts"]
         if w["accessible"]:
-            report += f"- ✅ **Accessible** ({w['schema_count']} properties)\n"
+            report += f"✅ **Workouts Database:** Accessible ({w['schema_count']} properties found)\n"
         else:
-            report += f"- ❌ **Not accessible**\n"
+            report += f"❌ **Workouts Database:** Cannot access database\n"
             if w["error"]:
-                report += f"  - Error: `{w['error']}`\n"
+                error_msg = w["error"]
+                if "unauthorized" in error_msg.lower() or "token" in error_msg.lower():
+                    report += "  \n**Fix:** Check your `NOTION_TOKEN` in GitHub Secrets and ensure the integration has access to the database.\n"
+                elif "not found" in error_msg.lower() or "404" in error_msg.lower():
+                    report += "  \n**Fix:** Verify your `NOTION_DATABASE_ID` in GitHub Secrets is correct.\n"
+                else:
+                    report += f"  \n**Error details:** {error_msg}\n"
         
-        report += "\n### Daily Summary Database\n\n"
         ds = db_access["daily_summary"]
         if ds["accessible"]:
-            report += f"- ✅ **Accessible** ({ds['schema_count']} properties)\n"
+            report += f"✅ **Daily Summary Database:** Accessible ({ds['schema_count']} properties found)\n"
         elif ds.get("error"):
-            report += f"- ❌ **Not accessible**\n"
-            report += f"  - Error: `{ds['error']}`\n"
+            report += f"❌ **Daily Summary Database:** Cannot access\n"
+            report += f"  \n**Fix:** Check `NOTION_DAILY_SUMMARY_DATABASE_ID` in GitHub Secrets, or remove this secret if you don't use Daily Summary.\n"
         else:
-            report += "- ⚠️ **Not configured** (optional)\n"
+            report += "⚪ **Daily Summary Database:** Not configured (optional - add `NOTION_DAILY_SUMMARY_DATABASE_ID` secret to enable)\n"
         
-        report += "\n### Athlete Metrics Database\n\n"
         am = db_access["athlete_metrics"]
         if am["accessible"]:
-            report += f"- ✅ **Accessible** ({am['schema_count']} properties)\n"
+            report += f"✅ **Athlete Metrics Database:** Accessible ({am['schema_count']} properties found)\n"
         elif am.get("error"):
-            report += f"- ❌ **Not accessible**\n"
-            report += f"  - Error: `{am['error']}`\n"
+            report += f"❌ **Athlete Metrics Database:** Cannot access\n"
+            report += f"  \n**Fix:** Check `NOTION_ATHLETE_METRICS_DATABASE_ID` in GitHub Secrets, or remove this secret if you don't use Athlete Metrics.\n"
         else:
-            report += "- ⚠️ **Not configured** (optional)\n"
+            report += "⚪ **Athlete Metrics Database:** Not configured (optional - add `NOTION_ATHLETE_METRICS_DATABASE_ID` secret to enable)\n"
     else:
-        report += "*Database access verification skipped (Notion token not available)*\n"
+        report += "⚠️ **Database check skipped** (Notion token not available in report generation)\n"
     
     report += "\n---\n\n"
     
     # Add last activity weather section
-    report += "## Last Activity Weather Check\n\n"
+    report += "## 🌤️ Weather Data Check\n\n"
     if last_activity_weather:
-        report += "**Most recent activity in Notion:**\n\n"
+        report += "**Most recent activity:** "
         if last_activity_weather.get("name"):
-            report += f"- **Name:** {last_activity_weather['name']}\n"
+            report += f"*{last_activity_weather['name']}*"
         if last_activity_weather.get("date"):
-            report += f"- **Date:** {last_activity_weather['date']}\n"
-        if last_activity_weather.get("activity_id"):
-            report += f"- **Activity ID:** {last_activity_weather['activity_id']}\n"
+            report += f" ({last_activity_weather['date'][:10]})"  # Just the date part
+        report += "\n\n"
         
         temp = last_activity_weather.get("temperature")
         weather = last_activity_weather.get("weather_conditions")
         
-        if temp is not None:
-            report += f"- **Temperature:** {temp}°F\n"
-        if weather:
-            report += f"- **Weather Conditions:** {weather}\n"
-        
-        if temp is None and not weather:
-            report += "- ⚠️ **No weather data** (activity may be indoor or weather fetch failed)\n"
+        if temp is not None and weather:
+            report += f"✅ **Weather data is working:** {temp}°F, {weather}\n"
+        elif temp is not None:
+            report += f"⚠️ **Partial weather data:** Temperature ({temp}°F) found, but weather conditions missing\n"
+            report += "  \n**Fix:** Check that `Weather Conditions` property exists in your Workouts database (Rich text type)\n"
+        elif weather:
+            report += f"⚠️ **Partial weather data:** Weather conditions found, but temperature missing\n"
+            report += "  \n**Fix:** Check that `Temperature (°F)` property exists in your Workouts database (Number type)\n"
+        else:
+            report += "⚠️ **No weather data found**\n\n"
+            report += "**Possible reasons:**\n"
+            report += "- Activity is indoor (no location data)\n"
+            report += "- Weather properties don't exist in database (add `Temperature (°F)` and `Weather Conditions`)\n"
+            report += "- Weather API failed or activity is too recent\n"
+            report += "  \n**To fix:** See `docs/NOTION_PROPERTIES.md` for property setup instructions.\n"
     else:
-        report += "*Could not retrieve last activity weather (Notion token or database ID not available)*\n"
+        report += "⚠️ **Could not check weather** (Notion token or database ID not available)\n"
     
     report += "\n---\n\n"
     
-    report += """## Notes
-
-This report summarizes operational statistics only. It does not provide training analysis or recommendations.
-
-For detailed logs, see GitHub Actions workflow runs.
-
-"""
+    # Errors section
+    report += "## ❌ Errors & Issues\n\n"
+    
+    if aggregated['total_errors'] == 0:
+        report += "✅ **No errors this week!** Everything is running smoothly.\n\n"
+    else:
+        report += f"⚠️ **{aggregated['total_errors']} error(s) occurred this week.**\n\n"
+        
+        if aggregated['error_fingerprints']:
+            report += "### Most Common Issues:\n\n"
+            sorted_errors = sorted(aggregated['error_fingerprints'].items(), key=lambda x: x[1], reverse=True)
+            for i, (fingerprint, count) in enumerate(sorted_errors[:5], 1):
+                report += f"#### {i}. Occurred {count} time(s):\n\n"
+                report += f"```\n{fingerprint[:200]}\n```\n\n"
+                explanation = format_error_explanation(fingerprint)
+                report += f"{explanation}\n\n"
+            
+            if len(sorted_errors) > 5:
+                report += f"*... and {len(sorted_errors) - 5} more error pattern(s)*\n\n"
+    
+    # Warnings section
+    if aggregated['total_warnings'] > 0:
+        report += f"---\n\n## ⚠️ Warnings\n\n"
+        report += f"**Total warnings:** {aggregated['total_warnings']}\n\n"
+        report += "*Check GitHub Actions logs for detailed warning messages.*\n\n"
+    
+    # Footer
+    report += "---\n\n## 📝 Next Steps\n\n"
+    
+    if not overall_healthy:
+        report += "**Action items:**\n\n"
+        if aggregated['workouts']['failed'] > 0:
+            report += f"1. 🔴 Fix {aggregated['workouts']['failed']} failed activity sync(s) - see error details above\n"
+        if db_access and not db_access['workouts']['accessible']:
+            report += "2. 🔴 Fix Workouts database access - check authentication and database ID\n"
+        if last_activity_weather and not last_activity_weather.get("temperature") and not last_activity_weather.get("weather_conditions"):
+            report += "3. ⚠️ Add weather properties to Workouts database (optional but recommended)\n"
+        if aggregated['daily_summary']['enabled'] and aggregated['daily_summary']['total_failed'] > 0:
+            report += f"4. ⚠️ Fix {aggregated['daily_summary']['total_failed']} failed Daily Summary update(s)\n"
+        if aggregated['athlete_metrics']['enabled'] and aggregated['athlete_metrics']['total_failed'] > 0:
+            report += f"5. ⚠️ Fix Athlete Metrics update failures\n"
+        report += "\n"
+    else:
+        report += "✅ **No action needed** - everything is working correctly!\n\n"
+    
+    report += "---\n\n"
+    report += "## 📚 Additional Resources\n\n"
+    report += "- **Full logs:** Check GitHub Actions → Workflows → Sync Strava to Notion\n"
+    report += "- **Property reference:** See `docs/NOTION_PROPERTIES.md` for database setup\n"
+    report += "- **Troubleshooting:** See README.md troubleshooting section\n"
+    report += "- **Repository:** https://github.com/coltbradley/strava-to-notion\n\n"
+    report += "---\n\n"
+    report += "*This is an automated status report. It summarizes operational statistics only and does not provide training analysis or recommendations.*\n"
+    
     return report
 
 
