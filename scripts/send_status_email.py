@@ -7,6 +7,7 @@ Sends the generated weekly_status.md report via SMTP.
 
 import os
 import sys
+import re
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -41,55 +42,155 @@ def send_email(
     
     # Send
     try:
+        print(f"Connecting to SMTP server {smtp_host}:{smtp_port}...", file=sys.stderr)
         server = smtplib.SMTP(smtp_host, smtp_port)
+        server.set_debuglevel(0)  # Set to 1 for verbose debugging
+        
+        print("Starting TLS...", file=sys.stderr)
         server.starttls()  # starttls() enables certificate verification by default in Python
+        
+        print(f"Logging in as {smtp_username}...", file=sys.stderr)
         server.login(smtp_username, smtp_password)
+        
+        print(f"Sending email from {from_email} to {to_email}...", file=sys.stderr)
         server.send_message(msg)
+        
+        print("Email sent successfully, closing connection...", file=sys.stderr)
         server.quit()
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"SMTP Authentication Error: {e}", file=sys.stderr)
+        print("Check your SMTP_USERNAME and SMTP_PASSWORD credentials.", file=sys.stderr)
+        return False
+    except smtplib.SMTPConnectError as e:
+        print(f"SMTP Connection Error: Could not connect to {smtp_host}:{smtp_port}", file=sys.stderr)
+        print(f"Details: {e}", file=sys.stderr)
+        return False
+    except smtplib.SMTPException as e:
+        print(f"SMTP Error: {e}", file=sys.stderr)
+        return False
     except Exception as e:
-        print(f"Error sending email: {e}", file=sys.stderr)
+        print(f"Unexpected error sending email: {type(e).__name__}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return False
 
 
 def markdown_to_html(text: str) -> str:
     """Convert markdown to simple HTML (basic conversion)."""
-    html = text
-    
-    # Headers
-    html = html.replace("# ", "<h1>").replace("\n# ", "</h1>\n<h1>")
-    html = html.replace("## ", "<h2>").replace("\n## ", "</h2>\n<h2>")
-    html = html.replace("### ", "<h3>").replace("\n### ", "</h3>\n<h3>")
-    
-    # Bold
-    html = html.replace("**", "<strong>", 1).replace("**", "</strong>", 1)
-    
-    # Code
-    html = html.replace("`", "<code>").replace("`", "</code>")
-    
-    # Lists (simple - assumes * format)
-    lines = html.split("\n")
-    in_list = False
+    lines = text.split("\n")
     result = []
-    for line in lines:
-        if line.strip().startswith("* "):
+    in_list = False
+    in_paragraph = False
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        
+        # Headers (check before other processing)
+        if stripped.startswith("### "):
+            if in_list:
+                result.append("</ul>")
+                in_list = False
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
+            content = stripped[4:]
+            result.append(f"<h3>{content}</h3>")
+            i += 1
+            continue
+        elif stripped.startswith("## "):
+            if in_list:
+                result.append("</ul>")
+                in_list = False
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
+            content = stripped[3:]
+            result.append(f"<h2>{content}</h2>")
+            i += 1
+            continue
+        elif stripped.startswith("# "):
+            if in_list:
+                result.append("</ul>")
+                in_list = False
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
+            content = stripped[2:]
+            result.append(f"<h1>{content}</h1>")
+            i += 1
+            continue
+        
+        # Horizontal rules
+        if stripped == "---":
+            if in_list:
+                result.append("</ul>")
+                in_list = False
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
+            result.append("<hr>")
+            i += 1
+            continue
+        
+        # Lists
+        if stripped.startswith("* "):
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
             if not in_list:
                 result.append("<ul>")
                 in_list = True
-            content = line.strip()[2:]
+            content = stripped[2:]
+            # Process inline formatting (bold, code)
+            content = _process_inline_formatting(content)
             result.append(f"  <li>{content}</li>")
+            i += 1
+            continue
         else:
             if in_list:
                 result.append("</ul>")
                 in_list = False
-            result.append(line)
+        
+        # Empty line - end paragraph
+        if not stripped:
+            if in_paragraph:
+                result.append("</p>")
+                in_paragraph = False
+            i += 1
+            continue
+        
+        # Regular paragraph content
+        if not in_paragraph:
+            result.append("<p>")
+            in_paragraph = True
+        
+        # Process inline formatting (bold, code) for paragraph content
+        formatted_line = _process_inline_formatting(line)
+        result.append(formatted_line)
+        i += 1
+    
+    # Close any open tags
     if in_list:
         result.append("</ul>")
-    html = "\n".join(result)
+    if in_paragraph:
+        result.append("</p>")
     
-    # Paragraphs
-    html = html.replace("\n\n", "</p><p>")
-    html = f"<p>{html}</p>"
+    return "\n".join(result)
+
+
+def _process_inline_formatting(text: str) -> str:
+    """Process inline markdown formatting (bold, code, etc.)"""
+    html = text
+    
+    # Convert bold (**text** or __text__)
+    html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
+    html = re.sub(r'__(.+?)__', r'<strong>\1</strong>', html)
+    
+    # Convert inline code (`code`)
+    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
     
     return html
 

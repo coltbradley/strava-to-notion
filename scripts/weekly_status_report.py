@@ -283,6 +283,71 @@ def format_health_status(value: bool, enabled: bool = True) -> str:
     return "✅ Working" if value else "❌ Not accessible"
 
 
+def validate_stats_health(all_stats: List[Dict[str, Any]], weekly_stats: List[Dict[str, Any]]) -> List[str]:
+    """
+    Validate stats health and return list of warnings/concerns.
+    
+    Returns list of warning messages if issues are detected.
+    """
+    warnings = []
+    
+    # Check if stats file exists and has data
+    if not all_stats:
+        warnings.append("⚠️ No sync runs found in stats file - system may not be running regularly")
+        return warnings
+    
+    # Check if there are any recent runs (within last 2 days)
+    now = datetime.now(timezone.utc)
+    recent_cutoff = now - timedelta(days=2)
+    recent_runs = [
+        s for s in all_stats
+        if datetime.fromisoformat(s["timestamp"]) >= recent_cutoff
+    ]
+    
+    if not recent_runs:
+        warnings.append("⚠️ No sync runs in the last 2 days - system may be down or GitHub Actions may be failing")
+    
+    # Check if weekly stats is empty (could indicate date filtering issues)
+    if not weekly_stats and all_stats:
+        # This could mean all stats are older than 7 days, which is unusual for a running system
+        oldest_stat = min(
+            (datetime.fromisoformat(s["timestamp"]) for s in all_stats),
+            default=None
+        )
+        if oldest_stat:
+            days_old = (now - oldest_stat).days
+            if days_old > 14:
+                warnings.append(f"⚠️ Most recent sync run was {days_old} days ago - system appears to be down")
+    
+    # Check for consistent failures
+    if weekly_stats:
+        total_runs = len(weekly_stats)
+        failed_runs = sum(1 for s in weekly_stats if s.get("workouts", {}).get("failed", 0) > 0)
+        if failed_runs > 0 and failed_runs == total_runs:
+            warnings.append("🚨 All recent sync runs have failed - urgent attention required")
+        elif failed_runs > total_runs * 0.5:
+            warnings.append(f"⚠️ {failed_runs} out of {total_runs} recent runs failed - reliability issues detected")
+    
+    # Check for authentication errors
+    auth_error_patterns = ["401", "unauthorized", "refresh token", "authentication", "invalid token"]
+    auth_errors = []
+    for stat in weekly_stats:
+        for error in stat.get("errors", []):
+            error_lower = str(error).lower()
+            if any(pattern in error_lower for pattern in auth_error_patterns):
+                auth_errors.append(error)
+    
+    if auth_errors:
+        warnings.append(f"🚨 Authentication errors detected ({len(auth_errors)} occurrence(s)) - check Strava/Notion tokens")
+    
+    # Check for missing timestamp fields
+    missing_timestamps = [s for s in all_stats if "timestamp" not in s]
+    if missing_timestamps:
+        warnings.append(f"⚠️ {len(missing_timestamps)} stat(s) missing timestamp field - data integrity issue")
+    
+    return warnings
+
+
 def format_error_explanation(error_fingerprint: str) -> str:
     """Provide human-readable explanation and fix guidance for common errors."""
     error_lower = error_fingerprint.lower()
@@ -313,6 +378,7 @@ def generate_report(
     commit_sha: str = "unknown",
     db_access: Optional[Dict[str, Any]] = None,
     last_activity_weather: Optional[Dict[str, Any]] = None,
+    health_warnings: Optional[List[str]] = None,
 ) -> str:
     """Generate markdown report."""
     week_end_str = week_end.strftime("%Y-%m-%d")
@@ -322,6 +388,31 @@ def generate_report(
     daily_summary_healthy = not aggregated['daily_summary']['enabled'] or aggregated['daily_summary']['total_failed'] == 0
     athlete_metrics_healthy = not aggregated['athlete_metrics']['enabled'] or aggregated['athlete_metrics']['total_failed'] == 0
     overall_healthy = workouts_healthy and daily_summary_healthy and athlete_metrics_healthy and aggregated['total_errors'] == 0
+    
+    # Build daily summary section
+    if aggregated['daily_summary']['enabled']:
+        daily_summary_section = f"""- **Days processed:** {aggregated['daily_summary']['total_days']}
+- **Failed updates:** {aggregated['daily_summary']['total_failed']}
+"""
+        if aggregated['daily_summary']['total_failed'] > 0:
+            daily_summary_section += f"⚠️ **Warning:** {aggregated['daily_summary']['total_failed']} days failed to update. Check your Daily Summary database configuration.\n"
+    else:
+        daily_summary_section = ""
+    
+    # Build athlete metrics section
+    if aggregated['athlete_metrics']['enabled']:
+        athlete_metrics_section = f"""- **Successful updates:** {aggregated['athlete_metrics']['total_upserted']}
+- **Failed updates:** {aggregated['athlete_metrics']['total_failed']}
+"""
+        if aggregated['athlete_metrics']['total_failed'] > 0:
+            athlete_metrics_section += "⚠️ **Warning:** Athlete metrics updates are failing. Check your Athlete Metrics database configuration.\n"
+    else:
+        athlete_metrics_section = ""
+    
+    # Build workouts warning
+    workouts_warning = ""
+    if aggregated['workouts']['failed'] > 0:
+        workouts_warning = f"⚠️ **Warning:** {aggregated['workouts']['failed']} activities failed to sync. Check error details below."
     
     report = f"""# 📊 Strava → Notion Sync Weekly Status Report
 
@@ -333,9 +424,9 @@ def generate_report(
 
 ## 🎯 Quick Summary
 
-{"✅ **Everything is working well!** All systems operational." if overall_healthy else "⚠️ **Attention needed** - See details below"}
+{"✅ **Everything is working well!** All systems operational." if overall_healthy and not (health_warnings or []) else "⚠️ **Attention needed** - See details below"}
 
-**Sync Status:** {"🟢 Healthy" if workouts_healthy else "🔴 Issues detected"}  
+{"".join(f"{w}\n\n" for w in (health_warnings or [])) if health_warnings else ""}**Sync Status:** {"🟢 Healthy" if workouts_healthy else "🔴 Issues detected"}  
 **Errors this week:** {aggregated['total_errors']}  
 **Failed activities:** {aggregated['workouts']['failed']}  
 
@@ -353,19 +444,14 @@ def generate_report(
 - **Activities skipped:** {aggregated['workouts']['skipped']}
 - **Activities failed:** {aggregated['workouts']['failed']}
 
-{f"⚠️ **Warning:** {aggregated['workouts']['failed']} activities failed to sync. Check error details below." if aggregated['workouts']['failed'] > 0 else ""}
+{workouts_warning}
 
 ### Daily Summary Database {format_health_status(daily_summary_healthy, aggregated['daily_summary']['enabled'])}
 
-{"" if not aggregated['daily_summary']['enabled'] else f"""- **Days processed:** {aggregated['daily_summary']['total_days']}
-- **Failed updates:** {aggregated['daily_summary']['total_failed']}
-{chr(10) + f"⚠️ **Warning:** {aggregated['daily_summary']['total_failed']} days failed to update. Check your Daily Summary database configuration." if aggregated['daily_summary']['total_failed'] > 0 else ""}"""}
-
+{daily_summary_section}
 ### Athlete Metrics Database {format_health_status(athlete_metrics_healthy, aggregated['athlete_metrics']['enabled'])}
 
-{"" if not aggregated['athlete_metrics']['enabled'] else f"""- **Successful updates:** {aggregated['athlete_metrics']['total_upserted']}
-- **Failed updates:** {aggregated['athlete_metrics']['total_failed']}
-{chr(10) + f"⚠️ **Warning:** Athlete metrics updates are failing. Check your Athlete Metrics database configuration." if aggregated['athlete_metrics']['total_failed'] > 0 else ""}"""}
+{athlete_metrics_section}
 
 ---
 
@@ -513,6 +599,13 @@ def main():
     all_stats = load_run_stats(stats_file)
     weekly_stats = filter_weekly_stats(all_stats, days=7)
     
+    # Validate stats health
+    health_warnings = validate_stats_health(all_stats, weekly_stats)
+    if health_warnings:
+        print("Health check warnings:")
+        for warning in health_warnings:
+            print(f"  {warning}")
+    
     # Aggregate
     aggregated = aggregate_stats(weekly_stats)
     
@@ -554,6 +647,7 @@ def main():
         commit_sha,
         db_access,
         last_activity_weather,
+        health_warnings,
     )
     
     # Write to file (in repo root)
